@@ -1,0 +1,41 @@
+# Regenerates web/tests/visual/baselines/ on the CI runner and commits them to the chosen branch.
+# Why: baselines must come from the same Chromium CI uses (the one pinned by playwright's exact version in
+# web/package.json), and a browser or dependency bump (Dependabot's playwright, lucide-react) changes every shot.
+# A laptop cannot reproduce that Chromium, so the bump's branch gets its baselines from here.
+# Run: Actions > "Update visual baselines" > Run workflow, pick the branch. Look at the diff in the commit before merging.
+# The push uses GITHUB_TOKEN, so it does not start the other workflows: the job runs `test:visual` itself
+# after writing, and main's own CI runs on merge.
+name: Update visual baselines
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26.x
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:visual:update
+      # Writing and then checking proves the new baselines are stable on this runner.
+      - run: npm run test:visual
+      - name: Commit the baselines
+        working-directory: .
+        run: |
+          git add web/tests/visual/baselines
+          if git diff --cached --quiet; then echo "baselines unchanged"; exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Update visual baselines (Chromium $(npx --prefix web playwright --version))"
+          git push

@@ -1,0 +1,23 @@
+import { Meta } from '@storybook/addon-docs/blocks'
+
+<Meta title="Introduction" />
+
+# python-app-template
+
+The template's web app, built on [strata-react](https://github.com/jburnhams/strata-react). Each
+story is a whole screen, opened through the app's own route tree at a URL, with the server put into
+one state by MSW (the same handlers the jsdom tests and the visual suite use). Use the toolbar to
+switch between light and dark.
+
+- **Greetings**: `useLoad` → `DataView` → `DataTable` with the sort in the URL, `RowAction` +
+  `useUndoable` + `UndoBar` to remove, `useSelection` + `BulkBar` to remove several,
+  `Field` + `AsyncButton` + `useAsyncAction` to send, `MetricStrip` for the figures.
+- **Log**: `useInfiniteLoad` over a cursor API → `InfiniteList`.
+- **System**: a polled status read with `StaleNotice`, `Meter` with named thresholds,
+  `CompositionBar`, `Status` words, `LinkCard`s.
+- **Settings**: `Tabs` with the tab in the URL, a form started from the server's values,
+  `ColorSchemeChoice`.
+
+Every story is screenshotted in Chromium, light and dark, and compared with a committed baseline in
+CI (`npm run test:visual`). Stories tagged `no-visual` need a click to reach their state; the
+route shots in `strata-visual.config.ts` cover those.

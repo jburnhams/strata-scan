@@ -1,0 +1,20 @@
+# Example systemd user unit. Copy to ~/.config/systemd/user/<name>.service, adjust the two paths, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now <name>
+# The unit starts the app through its console script, so it cannot drift from the repo: if the entry point moves,
+# `uv run app` still works, and `app serve --help` is the contract.
+[Unit]
+Description=python-app-template
+After=network.target
+
+[Service]
+WorkingDirectory=%h/path/to/checkout
+# `--locked` refuses to start if uv.lock and pyproject.toml disagree, instead of silently changing the environment.
+# systemd does not search ~/.local/bin, so give uv's full path (`command -v uv` shows it; %h is your home folder).
+ExecStart=%h/.local/bin/uv run --locked --no-dev app serve --host 127.0.0.1 --port 8360
+# Keep the data outside the checkout (see docs/deploying.md): set this to an absolute folder before the first start.
+Environment=APP_DATA=%h/path/to/data
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
