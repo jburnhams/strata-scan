@@ -4,6 +4,11 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-13
 
+**Stop committing the web build (branch `claude/project-thread-0n1ijc`)**
+Jonathan asked about the static assets folder: the built web app had been committed, because `.gitignore` still named the template's `src/app/server/static/` after the package rename.
+
+- `.gitignore`: ignores `src/stratascan/server/static/` (what `npm run build` writes and `strata-scan serve` serves); the 18 built files are removed from git. Deploying builds them (`docs/deploying.md`, step 1).
+
 **Review fixes: hand work, one-page tasks and failed reads (branch `claude/project-thread-0n1ijc`)**
 Three findings from the automated review on #5, each confirmed by a test that failed before the fix.
 
