@@ -68,6 +68,35 @@ def test_hand_work_survives_detect_and_read(runner, make_book):
         assert [(f.x, f.hand) for f in s.scalars(select(Figure).where(Figure.page_id == p.id))] == [(1, True)]
 
 
+def test_typed_text_or_a_drawn_picture_alone_keeps_a_page_through_detect(runner, make_book):
+    b = make_book()
+    runner.run(pipeline.Task(b, ("import", "detect", "read")))
+    typed, drawn = pages_of(b)[1:3]
+    with store.session() as s:
+        row = s.get(Page, typed.id)
+        row.text, row.text_edited = "My text", True
+        s.add(Figure(page_id=drawn.id, x=1, y=2, w=30, h=40, caption="Punch", hand=True))
+    runner.run(pipeline.Task(b, ("detect", "read")))
+    after = {p.id: p for p in pages_of(b)}
+    assert after[typed.id].text == "My text"
+    with store.session() as s:
+        assert [f.caption for f in s.scalars(select(Figure).where(Figure.page_id == drawn.id, Figure.hand))] == [
+            "Punch"
+        ]
+
+
+def test_a_task_for_one_page_follows_its_scan_through_detect(runner, make_book):
+    b = make_book()
+    runner.run(pipeline.Task(b, ("import", "detect")))
+    p = min(pages_of(b), key=lambda x: x.id)  # not the newest row, so SQLite gives its replacement a new id
+    runner.run(pipeline.Task(b, ("detect", "read"), (p.id,)))
+    assert book(b).error is None
+    again = [x for x in pages_of(b) if x.scan_id == p.scan_id]
+    assert [x.id for x in again] != [p.id]  # detect made new pages for the scan
+    assert all(x.ocr is not None for x in again)
+    assert all(x.ocr is None for x in pages_of(b) if x.scan_id != p.scan_id)
+
+
 def test_failures_are_said_in_words(make_book, tmp_path):
     def down(path, pdf, lang, dpi):
         raise pipeline.StageError("strata-models is not running")
@@ -83,6 +112,8 @@ def test_failures_are_said_in_words(make_book, tmp_path):
     assert book(b).error
     assert "4 of 4 pages could not be read: strata-models is not running" in book(b).error
     assert all(p.error == "strata-models is not running" for p in pages_of(b))
+    r.run(pipeline.Task(b, ("read", "export")))  # the export succeeds, and the failed read is still said
+    assert "could not be read" in (book(b).error or "")
     with store.session() as s:
         s.get(Book, b).source = str(tmp_path / "gone.pdf")
     r.run(pipeline.Task(b, ("import",)))

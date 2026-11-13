@@ -4,6 +4,12 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-13
 
+**Review fixes: hand work, one-page tasks and failed reads (branch `claude/project-thread-0n1ijc`)**
+Three findings from the automated review on #5, each confirmed by a test that failed before the fix.
+
+- `src/stratascan/pipeline.py`: detect leaves a scan alone when any of its pages has a person's work (a cut, typed text, or a hand-drawn picture), not only a hand cut: re-detecting deleted the pages and their typed text and pictures with them. A task for chosen pages follows their scans through detect, which gives the new pages new ids (a following `read` found none). The book's error is cleared once per task, so a successful export no longer hides a read that failed.
+- `tests/unit/test_pipeline.py`: a test for each.
+
 **strata-scan: the web app, and blank pages kept whole (branch `claude/project-thread-0n1ijc`)**
 The second half of the same request: the screens to look at a book, correct a page's cut, text and pictures, and make the files. Running the 1874 book through the API showed blank pages with no scanner bed cropped to a patch, so the page finder changed too.
 

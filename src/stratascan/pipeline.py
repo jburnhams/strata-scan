@@ -153,11 +153,23 @@ class Runner:
     # -- the stages --------------------------------------------------------------------------------------------------------------------
 
     def run(self, task: Task) -> None:
-        """Run a task's stages in this thread, in order; stop at the first that fails as a whole."""
+        """Run a task's stages in this thread, in order; stop at the first that fails as a whole. The book's error is cleared once, at the
+        start: a stage that fails for some pages says so, and a later stage that succeeds (an export) must not hide it."""
+        self._progress(task.book_id, error=None)
+        scans = None
+        if (
+            task.pages is not None
+        ):  # detect replaces a scan's pages with new ids, so the task follows the scans, not the page ids
+            with store.session() as s:
+                scans = set(s.scalars(select(Page.scan_id).where(Page.id.in_(task.pages))))
         for stage in task.stages:
-            self._progress(task.book_id, stage=stage, done=0, total=0, error=None)
+            self._progress(task.book_id, stage=stage, done=0, total=0)
+            pages = task.pages
+            if scans is not None:
+                with store.session() as s:
+                    pages = tuple(s.scalars(select(Page.id).where(Page.scan_id.in_(scans)))) or task.pages
             try:
-                getattr(self, f"stage_{stage}")(task.book_id, task.pages)
+                getattr(self, f"stage_{stage}")(task.book_id, pages)
             except (StageError, sources.SourceError) as e:
                 self._progress(task.book_id, stage="idle", error=str(e))
                 return
@@ -216,7 +228,10 @@ class Runner:
     def stage_detect(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
         with store.session() as s:
             scans = list(s.scalars(select(Scan).where(Scan.book_id == book_id).order_by(Scan.position)))
-            hand = set(s.scalars(select(Page.scan_id).where(Page.book_id == book_id, Page.hand)))
+            # a scan with any of a person's work on its pages is left alone: a cut, typed text or a drawn picture (re-detecting
+            # would delete the pages, and the text and pictures with them)
+            mine = (Page.hand | Page.text_edited) | Page.id.in_(select(Figure.page_id).where(Figure.hand))
+            hand = set(s.scalars(select(Page.scan_id).where(Page.book_id == book_id, mine)))
             if pages is not None:  # only the scans of these pages
                 wanted = set(s.scalars(select(Page.scan_id).where(Page.id.in_(pages))))
                 scans = [x for x in scans if x.id in wanted]
