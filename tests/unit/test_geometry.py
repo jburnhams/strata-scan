@@ -90,3 +90,12 @@ def test_type_printed_askew_on_a_level_page_is_levelled_by_its_lines():
     _x, _y, w, h = g.crop
     assert abs(w - W) < 0.04 * W
     assert abs(h - H) < 0.04 * H
+
+
+def test_a_blank_page_with_no_bed_is_the_whole_scan_not_a_patch_of_it():
+    # foxing and bleed-through: a lighter and a darker shade of one paper, which Otsu splits as if one were a bed
+    im = Image.new("RGB", (W, H), (226, 214, 190))
+    im.paste((236, 226, 204), (300, 500, W - 200, H - 300))
+    g = G.find_page(bgr(im))
+    assert g.crop == (0, 0, W, H)
+    assert g.confidence == 0.9

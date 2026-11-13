@@ -27,6 +27,9 @@ from numpy.typing import NDArray
 
 Image = NDArray[np.uint8]
 WORK = 800  # long side of the shrunk picture the outline is found in: enough for a degree, fast on 4000 px scans
+# Otsu's two classes closer than this (grey levels) are shades of one paper, not paper on a bed. Measured on both books: paper-only
+# scans 13-20 (39 for a full page of type), covers on a bed 50-95, pages on a bed 125-135.
+BED_CONTRAST = 30
 FILL = 0.80  # a row or column that is less page than this is trimmed from the edge
 FULL = 0.94
 SMALL = 0.25  # a light region smaller than this share of the scan is not a page (a label on a dark cover)  # a light region covering this much of the scan means there is no background to cut
@@ -98,7 +101,15 @@ def clamp(crop: tuple[int, int, int, int], w: int, h: int) -> tuple[int, int, in
 
 def _page_mask(small: Image) -> Image:
     g = cv2.GaussianBlur(gray(small), (5, 5), 0)
-    _, m = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    t, m = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    dark, light = g[g <= t], g[g > t]
+    if (
+        light.size == 0 or dark.size == 0
+    ):  # one flat shade (an empty scan): nothing to go on, which find_page says with 0.5
+        return np.zeros(g.shape, dtype=np.uint8) if light.size == 0 else np.full(g.shape, 255, dtype=np.uint8)
+    if float(light.mean()) - float(dark.mean()) < BED_CONTRAST:
+        # no bed: the scan is all paper, and Otsu only split its shades (bleed-through, foxing), which cut blank pages to a patch
+        return np.full(g.shape, 255, dtype=np.uint8)
     k = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k)  # text and rules inside the page
     return np.asarray(cv2.morphologyEx(m, cv2.MORPH_OPEN, k), dtype=np.uint8)  # thin bright edges and specks outside it

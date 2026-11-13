@@ -10,6 +10,8 @@
 - **Text noise**: engravings, page borders and covers produce lines of low-confidence nonsense. A line is kept with at least two letters or digits and either a mean confidence of 55 (75 on covers and pictures) or 60% of its words at 75 or more; a page with fewer than three sure words has no text.
 - **PDF size**: Tesseract embeds each page losslessly (the 1874 book's PDF was 129 MB); re-encoding page images as JPEG q75 at most 2400 px made it 14.5 MB.
 - **1874 book end to end**: 44 pages, 162 s for detect, read and export on this machine's four workers: 26 text, 12 blank, 3 cover, 3 picture; 14 pictures. Small capitals read poorly ("Pouxcn" for PUNCH), a reason to try a vision reader.
+- **Blank pages with no bed**: the 1874 book's blank leaves were scanned paper edge to edge, so Otsu split the paper's own shading and the page became a patch (page 12 was cut to its lower half). Measured gap between Otsu's two class means: paper only 13 to 20, a full text page with no bed 39, covers 50 to 95, pages on a bed 125 to 135. Under 30 the whole scan is the page (`BED_CONTRAST`); the blank scans 4, 5, 12 and 40 now come out whole at confidence 0.9 and the covers stay at 0.2.
+- **Web tests**: a jsdom `File` cannot be streamed through Node's fetch to MSW ("Premature close"), so the upload handler answers without reading the body; the server's own test reads it for real. The visual runner serves the build without the server's `<base>`, so `--mode visual` adds one.
 - Open: covers are saved as whole-page pictures (large PNGs, 55 MB of the 1874 book's figures folder); captions are not tied to their pictures yet.
 
 ## 2026-11-09: web app rebuilt on strata-react

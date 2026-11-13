@@ -5,7 +5,8 @@ import viteConfig from './vite.config.ts'
 // backend served by MSW from the app's own mock handlers. Dates render in UTC, as in the visual suite.
 process.env.TZ = 'UTC'
 
-export default mergeConfig(viteConfig, defineConfig({
+// vite.config.ts is a function of the mode (the visual build adds a <base>); tests take the plain one.
+export default mergeConfig(viteConfig({ mode: 'test', command: 'serve' }), defineConfig({
   test: {
     projects: [
       { extends: true, test: { name: 'unit', include: ['tests/unit/**/*.test.{ts,tsx}'], environment: 'node' } },

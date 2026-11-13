@@ -4,6 +4,17 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-13
 
+**strata-scan: the web app, and blank pages kept whole (branch `claude/project-thread-0n1ijc`)**
+The second half of the same request: the screens to look at a book, correct a page's cut, text and pictures, and make the files. Running the 1874 book through the API showed blank pages with no scanner bed cropped to a patch, so the page finder changed too.
+
+- `web/src/api.ts`: the books/pages/scans/figures endpoints and their types, the geometry helpers the cut editor shares with the server (`turnedSize`, `turnCrop`, `wrapAngle`) and the sentences (`describeBook`, `pageName`).
+- `web/src/screens/BooksScreen.tsx`, `BookScreen.tsx`, `PageScreen.tsx`: **new**; the shelf (add by upload or by path), a book (its work as a `useJob`, pages, pictures, files) and a page (cut: turn, crop, split or join a spread; text: unsure lines, kind, label; pictures: draw, remove). `Layout.tsx`, `routes.tsx`, `SystemScreen.tsx` (whether strata-models can read), `SettingsScreen.tsx` (data folder, resolution, pages at once), `NotFoundScreen.tsx`. `GreetingsScreen.tsx`, `LogScreen.tsx` and their tests, stories and baselines: removed.
+- `web/src/mocks/fixtures.ts`, `handlers.ts`, `images.ts` (**new**: three page previews from the 1874 book, public domain): the two books as sample data, every endpoint and each failure state.
+- `web/tests/integration/{Books,Book,Page}Screen.test.tsx` **new**; `App`, `Settings`, `System` tests and `tests/unit/logic.test.ts` rewritten. 65 tests, 100% on every coverage metric.
+- `web/stories/{books,book,page}.stories.tsx` **new**, `system.stories.tsx`: NoReader. `web/strata-visual.config.ts`: books, book, page, system and settings routes; `web/tests/visual/baselines/`: all new (greetings and log removed).
+- `web/vite.config.ts`: a function of the mode; `--mode visual` (`build:visual` in `package.json`) adds `<base href="/">`, because the visual runner serves the build without the server's `<base>` and a nested route (`/books/1`) otherwise asks for `/books/assets/...`. `web/vitest.config.ts` calls it for the test mode. Bundle size comment corrected (940 kB).
+- `src/stratascan/geometry.py`: `_page_mask` takes the whole scan as the page when Otsu's two classes are closer than `BED_CONTRAST` (30): a scan of paper only. `tests/unit/test_geometry.py`: a blank page with no bed stays whole.
+
 **strata-scan: scanned books to pages, text, pictures and a searchable PDF; backend and CLI (branch `claude/project-thread-0n1ijc`)**
 Jonathan asked to turn this repo (until now a copy of python-app-template) into a web app for processing two scanned books: rotate, crop, extract text and pictures, OCR, with model work in strata-models and screens from strata-react. This entry is the backend, CLI, tests and deploy files; the web app follows on the same branch.
 
