@@ -1,5 +1,17 @@
 # Progress log
 
+## 2026-11-13: from template to book scanner
+
+- Asked for (Jonathan): make strata-scan a web app to process two scanned books (rotate, crop, extract text and pictures, OCR), with model work in strata-models, reusable screens in strata-react, deployed on the home server like the other apps. diary-study was the prior art.
+- **OCR is Tesseract, through strata-models** (new `ocr` role, CPU lane, strata-models PR #51). It gives lines and words with boxes and confidences and a one-page searchable PDF, which the app needs for the text overlay, pictures and the PDF export. A vision-language reader is the next comparison, as a second model on the same role.
+- **Tesseract threads**: under the CPU lane's four parallel jobs a 360 dpi page took 80 s; with `OMP_THREAD_LIMIT=1` per job, 2 s. Set in the strata-models runtime and in the test helper.
+- **Resolution**: the Internet Archive PDFs are MRC (a high-resolution mask over lower-resolution colour), 360 dpi (1828 book) and 500 dpi (1874 book). Pages are drawn at the widest embedded image's resolution, capped by `max_dpi`; Tesseract is told the true dpi, otherwise the searchable PDF's pages come out at the wrong paper size (with it, the 1874 book's text pages measure about 5.6 x 8.3 in).
+- **Page finding**: OpenCV's `minAreaRect` reports a level page as -90° in this version; angles are folded into ±45°. Dark covers made the page region a printed label: a region under 25% of the scan now keeps the scan whole (confidence 0.2, so the first and last such scans become "cover"). A spread whose gutter shadow splits the paper in two is joined back (regions of comparable size are kept together). The text-skew pass first required a peak 1.5x the median score; a page printed 1.2° askew on level paper failed it (widely spaced lines give a broad peak), so it now requires 1.5x the minimum and a peak inside the range. The 1874 book's 44 angles were identical before and after the change.
+- **Text noise**: engravings, page borders and covers produce lines of low-confidence nonsense. A line is kept with at least two letters or digits and either a mean confidence of 55 (75 on covers and pictures) or 60% of its words at 75 or more; a page with fewer than three sure words has no text.
+- **PDF size**: Tesseract embeds each page losslessly (the 1874 book's PDF was 129 MB); re-encoding page images as JPEG q75 at most 2400 px made it 14.5 MB.
+- **1874 book end to end**: 44 pages, 162 s for detect, read and export on this machine's four workers: 26 text, 12 blank, 3 cover, 3 picture; 14 pictures. Small capitals read poorly ("Pouxcn" for PUNCH), a reason to try a vision reader.
+- Open: covers are saved as whole-page pictures (large PNGs, 55 MB of the 1874 book's figures folder); captions are not tied to their pictures yet.
+
 ## 2026-11-09: web app rebuilt on strata-react
 
 - Asked for: make the template use strata-react fully, as an example and starter for new apps, with Storybook and visual testing.
@@ -16,4 +28,4 @@
 ## 2026-10-29: template extraction
 
 - Extracted the shared Python + React full-stack structure from `strata-360` and `strata-stills` into `python-app-template`.
-- Included cross-platform `oslib.py`, atomic JSON `settings.py`, FastAPI server with `landing.html` fallback and static asset mounting from `src/app/server/static/`, React 19 + Vite 7 + Tailwind v4 web app with `withBase()` reverse-proxy path resolution, hermetic pytest and Vitest suites with MSW v3, ratcheting coverage floors, and multi-OS GitHub Actions workflows (`unit.yml` and `integration.yml`).
+- Included cross-platform `oslib.py`, atomic JSON `settings.py`, FastAPI server with `landing.html` fallback and static asset mounting from `src/stratascan/server/static/`, React 19 + Vite 7 + Tailwind v4 web app with `withBase()` reverse-proxy path resolution, hermetic pytest and Vitest suites with MSW v3, ratcheting coverage floors, and multi-OS GitHub Actions workflows (`unit.yml` and `integration.yml`).

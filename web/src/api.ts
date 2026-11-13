@@ -1,4 +1,4 @@
-// The FastAPI server's endpoints (src/app/server/app.py) and their shapes. Reads go through
+// The FastAPI server's endpoints (src/stratascan/server/app.py) and their shapes. Reads go through
 // strata-react's useLoad / useInfiniteLoad with fetchJson, which throws HttpError on a non-2xx
 // answer; the screens never call fetch themselves. Every URL is built here, through withBase, so
 // the app works at the server's root and behind a reverse proxy at /<prefix>/.
@@ -65,7 +65,7 @@ export const api = {
   removeMessage: (id: number) => fetchJson<MessageRecord>(withBase(paths.message(id)), { method: 'DELETE' }),
 }
 
-// The server's own limits (src/app/greet.py format_greeting, server put_settings), checked here
+// The server's own limits (src/stratascan/greet.py format_greeting, server put_settings), checked here
 // too so a person sees the reason under the field before sending. The server's 400 carries the
 // same sentence in its body, but fetchJson's HttpError does not keep the body (jburnhams/strata-react#42),
 // so without these the field could only say "refused (400)".

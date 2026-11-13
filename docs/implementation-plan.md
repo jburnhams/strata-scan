@@ -1,7 +1,8 @@
 # Implementation plan
 
-- [x] **M0 scaffold**: repository layout, `uv sync` setup (replaced the earlier `setup_env` scripts on 2026-11-09), `./app` and `app.cmd` launchers, `oslib.py`, `settings.py`, `doctor` CLI command.
-- [x] **M1 hello-world backend & CLI**: `greet.py` domain module, `hello` and `messages` CLI commands, FastAPI server (`server/app.py`) with `landing.html` fallback.
-- [x] **M2 React web app**: Vite + React 19 + Tailwind CSS v4 frontend (`web/`), hash router (`route.ts`), reverse-proxy-safe API client (`api.ts`), greeting and settings pages.
-- [x] **M3 test suites & CI**: hermetic pytest unit and integration suites, Vitest unit (node) and integration (jsdom + msw) suites, coverage gates, and GitHub Actions workflows (`unit.yml`, `integration.yml`).
-- [x] **M4 web app on strata-react**: the frontend rebuilt on [strata-react](https://github.com/jburnhams/strata-react) as a worked example for new apps (Greetings, Log, System, Settings screens; React Router with real paths; TanStack Query through `useLoad`; a theme generated from the subject), with Storybook and `strata-visual` screenshot tests in CI. The API gained `GET /api/system`, `GET /api/messages/page` and `DELETE /api/messages/{id}`, and serves the app at every page path.
+- [x] **M0 from the template**: python-app-template renamed (`stratascan`, `strata-scan`, port 8368), the greetings sample removed, settings `data_dir`, `max_dpi`, `workers`.
+- [x] **M1 backend**: shared-database records and migration, import (PDF and pictures), page finding (level, crop, split, covers), OCR through strata-models' new `ocr` role, pictures, kinds and labels, export (Markdown, text, searchable PDF, zip), HTTP API, CLI. Unit and integration suites on synthetic books with the real Tesseract.
+- [x] **M2 the two books**: both run end to end; thresholds checked on their pages (`docs/progress.md`).
+- [ ] **M3 web app**: Books, Book and Page screens on strata-react (RegionEditor for crops and pictures, a box overlay for the OCR's lines), mocks, jsdom tests, stories, visual baselines.
+- [ ] **M4 deploy**: user unit and Caddy snippet on the home server, schema and role in the shared database, Tesseract installed beside strata-models.
+- [ ] **Next**: a vision-language reader as a second `ocr` model on strata-models, compared with Tesseract on the hard pages (small caps, title pages, italics); captions under pictures; a reading view of the finished book.
