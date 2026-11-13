@@ -2,6 +2,46 @@
 
 Newest first, grouped by day. One entry per change, in the same commit or PR as the change.
 
+## 2026-11-13
+
+**Stop committing the web build (branch `claude/project-thread-0n1ijc`)**
+Jonathan asked about the static assets folder: the built web app had been committed, because `.gitignore` still named the template's `src/app/server/static/` after the package rename.
+
+- `.gitignore`: ignores `src/stratascan/server/static/` (what `npm run build` writes and `strata-scan serve` serves); the 18 built files are removed from git. Deploying builds them (`docs/deploying.md`, step 1).
+
+**Review fixes: hand work, one-page tasks and failed reads (branch `claude/project-thread-0n1ijc`)**
+Three findings from the automated review on #5, each confirmed by a test that failed before the fix.
+
+- `src/stratascan/pipeline.py`: detect leaves a scan alone when any of its pages has a person's work (a cut, typed text, or a hand-drawn picture), not only a hand cut: re-detecting deleted the pages and their typed text and pictures with them. A task for chosen pages follows their scans through detect, which gives the new pages new ids (a following `read` found none). The book's error is cleared once per task, so a successful export no longer hides a read that failed.
+- `tests/unit/test_pipeline.py`: a test for each.
+
+**strata-scan: the web app, and blank pages kept whole (branch `claude/project-thread-0n1ijc`)**
+The second half of the same request: the screens to look at a book, correct a page's cut, text and pictures, and make the files. Running the 1874 book through the API showed blank pages with no scanner bed cropped to a patch, so the page finder changed too.
+
+- `web/src/api.ts`: the books/pages/scans/figures endpoints and their types, the geometry helpers the cut editor shares with the server (`turnedSize`, `turnCrop`, `wrapAngle`) and the sentences (`describeBook`, `pageName`).
+- `web/src/screens/BooksScreen.tsx`, `BookScreen.tsx`, `PageScreen.tsx`: **new**; the shelf (add by upload or by path), a book (its work as a `useJob`, pages, pictures, files) and a page (cut: turn, crop, split or join a spread; text: unsure lines, kind, label; pictures: draw, remove). `Layout.tsx`, `routes.tsx`, `SystemScreen.tsx` (whether strata-models can read), `SettingsScreen.tsx` (data folder, resolution, pages at once), `NotFoundScreen.tsx`. `GreetingsScreen.tsx`, `LogScreen.tsx` and their tests, stories and baselines: removed.
+- `web/src/mocks/fixtures.ts`, `handlers.ts`, `images.ts` (**new**: three page previews from the 1874 book, public domain): the two books as sample data, every endpoint and each failure state.
+- `web/tests/integration/{Books,Book,Page}Screen.test.tsx` **new**; `App`, `Settings`, `System` tests and `tests/unit/logic.test.ts` rewritten. 65 tests, 100% on every coverage metric.
+- `web/stories/{books,book,page}.stories.tsx` **new**, `system.stories.tsx`: NoReader. `web/strata-visual.config.ts`: books, book, page, system and settings routes; `web/tests/visual/baselines/`: all new (greetings and log removed).
+- `web/vite.config.ts`: a function of the mode; `--mode visual` (`build:visual` in `package.json`) adds `<base href="/">`, because the visual runner serves the build without the server's `<base>` and a nested route (`/books/1`) otherwise asks for `/books/assets/...`. `web/vitest.config.ts` calls it for the test mode. Bundle size comment corrected (940 kB).
+- `src/stratascan/geometry.py`: `_page_mask` takes the whole scan as the page when Otsu's two classes are closer than `BED_CONTRAST` (30): a scan of paper only. `tests/unit/test_geometry.py`: a blank page with no bed stays whole.
+
+**strata-scan: scanned books to pages, text, pictures and a searchable PDF; backend and CLI (branch `claude/project-thread-0n1ijc`)**
+Jonathan asked to turn this repo (until now a copy of python-app-template) into a web app for processing two scanned books: rotate, crop, extract text and pictures, OCR, with model work in strata-models and screens from strata-react. This entry is the backend, CLI, tests and deploy files; the web app follows on the same branch.
+
+- `src/app` -> `src/stratascan`, `app`/`app.cmd` -> `strata-scan`/`strata-scan.cmd`; `pyproject.toml`: name `strata-scan`, script `strata-scan`, port 8368, dependencies opencv-python-headless, numpy, pypdfium2, pypdf, pillow, python-multipart, omarchy-db and strata-models-client (git sources), `[tool.omarchy-db]`, plugin tuning variables. `uv.lock`.
+- `src/app/greet.py`, `tests/unit/test_greet.py`: removed with the greetings sample.
+- `settings.py`: `data_dir`, `max_dpi` (600), `workers` (4).
+- `db/models.py`, `migrations/20261113_85a64741b9b6_initial.py`, `store.py`: **new**; books, scans, pages, figures in schema `stratascan` (defaults written portably by hand: `sa.false()`, `CURRENT_TIMESTAMP`).
+- `files.py`, `sources.py`, `geometry.py`, `figures.py`, `pipeline.py`, `export.py`: **new**; the folder layout, import, page finding, picture finding, the four stages and their runner, the exports. Why each threshold is what it is: `docs/progress.md`.
+- `server/app.py`: the books/pages/scans/figures API (listed in its docstring); the greetings routes removed. `server/landing.html`: lists the books when the web app is not built. `system.py`: data folder size and whether strata-models has the `ocr` role. `cli.py`: `add`, `books` (`--json` is the API's book shape), `run`, `export`; `run` on a missing book says so.
+- `tests/utils/books.py`, `tests/utils/models_service.py`: **new**; synthetic books (real type, an engraving, a scanner bed, a tilt, a cover) and a strata-models stand-in that runs the real `tesseract`. `tests/conftest.py`: a fresh database per test (`db_env`), `runner`, `make_book`, `models_service`.
+- `tests/unit/test_{geometry,figures,sources,pipeline,export,server}.py`: **new**; `test_{cli,settings,system,version}.py` rewritten. 45 tests, 96% coverage.
+- `tests/integration/`: rewritten for the CLI (a book added, read and exported through the stand-in) and the API on a real server (`live_app`: upload, wait, re-crop, typed text survives a re-read, hand-drawn picture, zip download).
+- `.github/workflows/unit.yml`, `integration.yml`: install Tesseract on Linux, macOS and Windows; `dbtool check` once.
+- `deploy/app.service` -> `deploy/strata-scan.service` (database and strata-models variables), `deploy/strata-scan.caddy` **new**; `docs/deploying.md`: the database and strata-models steps.
+- `README.md`, `AGENTS.md`, `tests/README.md`, `docs/overview.md`, `docs/implementation-plan.md`, `docs/progress.md`: describe strata-scan instead of the template sample.
+
 ## 2026-11-09
 
 **Regenerate visual baselines on the CI runner (branch `claude/project-thread-iw7199`)**

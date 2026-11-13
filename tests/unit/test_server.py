@@ -1,106 +1,174 @@
+"""The HTTP API over a real database and data folder, with the runner's OCR done by the real Tesseract (the `runner` fixture)."""
+
+import io
+
 import pytest
 import uvicorn
+from books import book_pdf, on_bed, page
 from fastapi.testclient import TestClient
+from PIL import Image
 
-from app.server import app as server_app
-from app.server.app import create_app
+from stratascan.server import app as server_app
+from stratascan.server.app import create_app
 
 
 @pytest.fixture
-def client():
-    return TestClient(create_app())
+def api(runner):
+    with TestClient(create_app(runner)) as c:
+        c.runner = runner
+        yield c
+
+
+def done(api, book_id):
+    assert api.runner.wait_idle(180)
+    return api.get(f"/api/books/{book_id}").json()
 
 
 def test_landing_page_and_built_static_index(tmp_path, monkeypatch):
     monkeypatch.setattr(server_app, "STATIC", str(tmp_path / "no_static"))
-    c = TestClient(create_app())
-    assert "python-app-template" in c.get("/").text
-    assert "Say hello" in c.get("/").text
+    c = TestClient(create_app(migrate=False))
+    assert "strata-scan" in c.get("/").text
     assert c.get("/api/health").json()["ok"] is True
-
     static = tmp_path / "static"
     (static / "assets").mkdir(parents=True)
     (static / "index.html").write_text("<h1>built react app</h1>", encoding="utf8")
     (static / "assets" / "main.js").write_text("console.log(1)", encoding="utf8")
     monkeypatch.setattr(server_app, "STATIC", str(static))
-    c2 = TestClient(create_app())
-    assert c2.get("/").text == '<base href="./"><h1>built react app</h1>'
+    c2 = TestClient(create_app(migrate=False))
+    assert c2.get("/books/1").text == '<base href="../"><h1>built react app</h1>'
     assert "console.log(1)" in c2.get("/assets/main.js").text
+    assert c2.get("/api/nope").status_code == 404
 
 
-def test_every_page_path_serves_the_app_with_a_base_back_to_its_root(tmp_path, monkeypatch):
-    static = tmp_path / "static"
-    static.mkdir()
-    (static / "index.html").write_text("<html><head><title>t</title></head></html>", encoding="utf8")
-    (static / "favicon.svg").write_text("<svg/>", encoding="utf8")
-    monkeypatch.setattr(server_app, "STATIC", str(static))
-    c = TestClient(create_app())
-    assert c.get("/settings?tab=appearance").text == '<html><head><base href="./"><title>t</title></head></html>'
-    assert '<base href="../">' in c.get("/log/2026").text  # one level down: one step back up
-    assert c.get("/favicon.svg").text == "<svg/>"
-    for escape in (
-        "..%5Capp.py",
-        "..%2Fapp.py",
-        "C:%5Cwindows%5Cwin.ini",
-        "..",
-    ):  # never a file outside the static folder: the app instead
-        assert c.get("/" + escape).text.startswith("<html><head><base")
-    assert c.get("/api/nope").status_code == 404  # an unknown endpoint is not the app
-    assert c.get("/api/nope").json() == {"detail": "no such endpoint"}
+def test_a_book_from_a_path_through_to_its_files(api, tmp_path):
+    src = book_pdf(str(tmp_path / "b.pdf"))
+    assert api.post("/api/books", json={"source": "b.pdf"}).status_code == 400
+    b = api.post("/api/books", json={"source": src, "title": " ", "author": "J. P. Collier"}).json()
+    assert b["title"] == "b"
+    assert b["author"] == "J. P. Collier"
+    assert b["stage"] in ("import", "detect", "read", "export", "idle")
+    b = done(api, b["id"])
+    assert (b["stage"], b["error"], b["scans"], b["pages"], b["read"], b["figures"]) == ("idle", None, 4, 4, 4, 1)
+    assert set(b["files"]) == {"book.md", "book.txt", "book.pdf", "book.zip"}
+    assert [x["id"] for x in api.get("/api/books").json()] == [b["id"]]
+    pages = api.get(f"/api/books/{b['id']}/pages").json()
+    assert [p["kind"] for p in pages] == ["cover", "text", "text", "text"]
+    assert pages[2]["figures"] == 1
+    full = api.get(f"/api/pages/{pages[1]['id']}").json()
+    assert "puppets" in full["text"]
+    assert full["lines"]
+    assert full["prev_id"] == pages[0]["id"]
+    assert full["next_id"] == pages[2]["id"]
+    assert full["scan"]["dpi"] == 150
+    assert len(full["siblings"]) == 1
+    figs = api.get(f"/api/books/{b['id']}/figures").json()
+    assert figs[0]["page_position"] == 3
+    for url in (
+        f"/api/figures/{figs[0]['id']}/image",
+        f"/api/pages/{pages[1]['id']}/image?size=thumb",
+        f"/api/pages/{pages[1]['id']}/image?size=full",
+    ):
+        r = api.get(url)
+        assert r.status_code == 200
+        assert Image.open(io.BytesIO(r.content)).width > 10
+    r = api.get(f"/api/scans/{full['scan']['id']}/image?angle=2")
+    assert r.headers["content-type"] == "image/jpeg"
+    assert 0.5 < float(r.headers["x-scale"]) <= 1.0
+    r = api.get(f"/api/books/{b['id']}/files/book.md")
+    assert r.text.startswith("# b")
+    assert 'filename="b.md"' in r.headers["content-disposition"]
+    assert api.get(f"/api/books/{b['id']}/files/nope.exe").status_code == 404
 
 
-def test_system_paging_and_removing_one_greeting(client):
-    for n in ("a", "b", "c"):
-        client.post("/api/messages", json={"name": n})
-    s = client.get("/api/system").json()
-    assert s["messages"] == 3
-    assert s["disk"]["total"] > 0
-    assert s["data_bytes"] > 0
-    page = client.get("/api/messages/page", params={"limit": 2}).json()
-    assert [m["name"] for m in page["messages"]] == ["c", "b"]
-    assert page["has_more"] is True
-    assert client.get("/api/messages/page", params={"after": 2, "limit": 2}).json() == {
-        "messages": [client.get("/api/messages").json()[2]],
-        "has_more": False,
+def test_upload_edit_pages_and_remove(api, tmp_path):
+    pdf = book_pdf(str(tmp_path / "u.pdf"), [on_bed(page()), on_bed(page())])
+    assert api.post("/api/books/upload", files={"file": ("notes.txt", b"x")}).status_code == 400
+    with open(pdf, "rb") as f:
+        b = api.post(
+            "/api/books/upload", files={"file": ("Punch.pdf", f, "application/pdf")}, data={"title": "Punch"}
+        ).json()
+    assert b["title"] == "Punch"
+    done(api, b["id"])
+    p1, p2 = api.get(f"/api/books/{b['id']}/pages").json()
+    # metadata
+    assert api.patch(f"/api/books/{b['id']}", json={"title": " "}).status_code == 422
+    assert (
+        api.patch(f"/api/books/{b['id']}", json={"title": "Punch and Judy", "author": "", "lang": "eng"}).json()[
+            "author"
+        ]
+        is None
+    )
+    # kind, label and text, and a bad kind
+    assert api.patch(f"/api/pages/{p1['id']}", json={"kind": "bake"}).status_code == 422
+    r = api.patch(f"/api/pages/{p1['id']}", json={"kind": "skip", "label": "ii", "text": "Corrected."}).json()
+    assert (r["kind"], r["label"], r["text"], r["text_edited"]) == ("skip", "ii", "Corrected.", True)
+    # a new turn: hand work, drawn and read again
+    r = api.patch(f"/api/pages/{p2['id']}", json={"angle": 1.0}).json()
+    assert r["hand"]
+    assert r["angle"] == 1.0
+    assert api.post(f"/api/books/{b['id']}/run", json={"stages": ["read"]}).status_code in (202, 409)
+    done(api, b["id"])
+    assert api.get(f"/api/pages/{p2['id']}").json()["read"]
+    # the first scan becomes a spread by hand; the corrected text stays with... nothing, it was a single page
+    scan = api.get(f"/api/pages/{p1['id']}").json()["scan"]
+    bad = {
+        "pages": [
+            {"side": "left", "crop": {"x": 0, "y": 0, "w": 10, "h": 10}},
+            {"side": "left", "crop": {"x": 0, "y": 0, "w": 10, "h": 10}},
+        ]
     }
-    assert client.get("/api/messages/page", params={"limit": 0}).status_code == 422
-    assert client.delete("/api/messages/2").json()["name"] == "b"
-    assert client.delete("/api/messages/2").status_code == 404
-    assert [m["name"] for m in client.get("/api/messages").json()] == ["c", "a"]
+    assert api.put(f"/api/scans/{scan['id']}/pages", json=bad).status_code == 422
+    half = scan["width"] // 2
+    made = api.put(
+        f"/api/scans/{scan['id']}/pages",
+        json={
+            "pages": [
+                {"side": "left", "crop": {"x": 0, "y": 0, "w": half, "h": scan["height"]}},
+                {"side": "right", "crop": {"x": half, "y": 0, "w": half, "h": scan["height"] + 99}},
+            ]
+        },
+    ).json()
+    assert [m["side"] for m in made] == ["left", "right"]
+    assert [m["position"] for m in made] == [1, 2]
+    done(api, b["id"])
+    assert [p["position"] for p in api.get(f"/api/books/{b['id']}/pages").json()] == [1, 2, 3]
+    # pictures by hand
+    figs = api.put(
+        f"/api/pages/{made[0]['id']}/figures",
+        json={"figures": [{"x": 10, "y": 20, "w": 100, "h": 9999, "caption": " Mr Punch "}]},
+    ).json()
+    assert figs[0]["caption"] == "Mr Punch"
+    assert figs[0]["hand"]
+    assert figs[0]["y"] + figs[0]["h"] <= api.get(f"/api/pages/{made[0]['id']}").json()["size"]["h"] + 1
+    assert api.get(f"/api/figures/{figs[0]['id']}/image").status_code == 200
+    # 404s, a busy book, removal
+    assert api.get("/api/books/999").status_code == 404
+    assert api.get("/api/pages/999").status_code == 404
+    assert api.patch("/api/pages/999", json={}).status_code == 404
+    assert api.patch("/api/books/999", json={}).status_code == 404
+    assert api.get("/api/scans/999/image").status_code == 404
+    assert api.get("/api/figures/999/image").status_code == 404
+    assert api.post(f"/api/books/{b['id']}/run", json={"stages": ["bake"]}).status_code == 400
+    assert api.delete(f"/api/books/{b['id']}").json() == {"removed": b["id"]}
+    assert api.get("/api/books").json() == []
 
 
-def test_hello_and_messages_lifecycle(client):
-    assert client.get("/api/hello").json() == {"name": "World", "greeting": "Hello", "message": "Hello, World!"}
-    assert client.get("/api/hello", params={"name": "Ada", "greeting": "Hi"}).json()["message"] == "Hi, Ada!"
-    assert client.get("/api/hello", params={"name": "x" * 121}).status_code == 400
+def test_a_busy_book_refuses_changes(api, tmp_path, make_book):
+    from stratascan import store
+    from stratascan.db.models import Book
 
-    assert client.get("/api/messages").json() == []
-    m = client.post("/api/messages", json={"name": "Ada", "greeting": "Hi"}).json()
-    assert m["id"] == 1
-    assert m["message"] == "Hi, Ada!"
-    assert client.post("/api/messages", json={"name": "x" * 121}).status_code == 400
-    assert len(client.get("/api/messages").json()) == 1
-    assert client.delete("/api/messages").json() == {"cleared": 1}
-    assert client.get("/api/messages").json() == []
+    b = make_book()
+    with store.session() as s:
+        s.get(Book, b).stage = "read"
+    r = api.delete(f"/api/books/{b}")
+    assert r.status_code == 409
+    assert "busy (read)" in r.json()["detail"]
+    assert api.get(f"/api/books/{b}/files/book.md").status_code == 404  # not made yet
+    assert api.get("/api/pages/1/image").status_code == 404
 
 
-def test_settings_roundtrip_and_server_main(client, tmp_path, monkeypatch):
-    assert client.put("/api/settings", json={"data_dir": "relative/path"}).status_code == 400
-    new_dir = str(tmp_path / "custom_data")
-    monkeypatch.delenv("APP_DATA", raising=False)
-    res = client.put("/api/settings", json={"data_dir": new_dir, "greeting": "Hey"}).json()
-    assert res == {"data_dir": new_dir, "greeting": "Hey"}
-    assert client.get("/api/settings").json() == {"data_dir": new_dir, "greeting": "Hey"}
-
+def test_main_serves_on_the_default_port(monkeypatch):
     runs = []
     monkeypatch.setattr(uvicorn, "run", lambda app, host, port, log_level: runs.append((host, port, log_level)))
-    server_app.main(["--host", "127.0.0.1", "--port", "8360"])
-    assert runs == [("127.0.0.1", 8360, "warning")]
-
-
-def test_settings_put_with_one_field_or_none_changes_only_what_was_sent(client, tmp_path, monkeypatch):
-    monkeypatch.delenv("APP_DATA", raising=False)
-    new_dir = str(tmp_path / "data")
-    assert client.put("/api/settings", json={"data_dir": new_dir}).json()["data_dir"] == new_dir
-    assert client.put("/api/settings", json={"greeting": "Hey"}).json() == {"data_dir": new_dir, "greeting": "Hey"}
-    assert client.put("/api/settings", json={}).json() == {"data_dir": new_dir, "greeting": "Hey"}
+    server_app.main(["--host", "127.0.0.1", "--port", "8368"])
+    assert runs == [("127.0.0.1", 8368, "warning")]

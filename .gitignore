@@ -10,7 +10,7 @@ htmlcov/
 .pytest_cache/
 .ruff_cache/
 web/node_modules/
-src/app/server/static/
+src/stratascan/server/static/
 web/coverage/
 data/
 out/

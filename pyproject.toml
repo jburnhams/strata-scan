@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "python-app-template"
-version = "0.1.0"        # the single source of truth: `app.__version__` reads it back with importlib.metadata
-description = "Full-stack Python + React application template (FastAPI, CLI, strata-react)"
+name = "strata-scan"
+version = "0.1.0"        # the single source of truth: `stratascan.__version__` reads it back with importlib.metadata
+description = "Turn scanned books into clean pages, text and pictures (FastAPI, CLI, strata-react)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,14 +14,24 @@ dependencies = [
     "pydantic>=2.9",
     "strata-python",     # shared server code: oslib, settings, web serving, CLI commands, test plugin, strata-check
     "tzdata; sys_platform == 'win32'",   # IANA timezone database, needed on Windows for zoneinfo
+    "opencv-python-headless>=5.0.0.93",
+    "numpy>=2.4.6",
+    "pypdfium2>=5.15.2",
+    "pypdf>=7.1.0",
+    "pillow>=13.0.0",
+    "omarchy-db",
+    "strata-models-client",
+    "python-multipart>=0.0.33",
 ]
 
 [tool.uv.sources]
 # Tracks main (no tag): uv.lock pins the commit, `uv lock --upgrade-package strata-python` moves it (the weekly workflow does that)
 strata-python = { git = "https://github.com/jburnhams/strata-python" }
+omarchy-db = { git = "https://github.com/jburnhams/database", subdirectory = "python" }
+strata-models-client = { git = "https://github.com/jburnhams/strata-models", subdirectory = "client" }
 
 [project.scripts]
-app = "app.cli:main"
+strata-scan = "stratascan.cli:main"
 
 [dependency-groups]
 dev = [
@@ -39,14 +49,14 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/app"]
+packages = ["src/stratascan"]
 # The React build is gitignored but must ship in the wheel: `cd web && npm run build` before `uv build`.
-artifacts = ["src/app/server/static/**"]
+artifacts = ["src/stratascan/server/static/**"]
 
 [tool.pytest.ini_options]
 pythonpath = ["tests/utils"]
-strata_env_prefix = "APP"                 # strata-python plugin: APP_HOME and APP_DATA point into a tmp dir for every test
-strata_tuning_vars = ["APP_GREETING"]     # removed from the environment for every test
+strata_env_prefix = "STRATASCAN"                 # strata-python plugin: STRATASCAN_HOME and STRATASCAN_DATA point into a tmp dir for every test
+strata_tuning_vars = ["STRATASCAN_MAX_DPI", "STRATASCAN_WORKERS", "STRATA_MODELS_URL"]  # removed from the environment for every test
 testpaths = ["tests/unit"]
 addopts = "-ra --timeout=300 --strict-markers --strict-config"
 filterwarnings = ["ignore:Using `httpx` with `starlette.testclient`"]       # TestClient noise from the installed starlette; remove when the dependency moves on
@@ -56,7 +66,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src/app"]
+source = ["src/stratascan"]
 branch = true
 omit = ["*/__main__.py"]
 
@@ -84,3 +94,8 @@ ignore = ["E501"]        # the formatter wraps code; long comments and docstring
 include = ["src"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
+
+[tool.omarchy-db]
+app = "stratascan"                  # role and schema in the shared database (`dbtool new-app stratascan` once on the server)
+models = "stratascan.db.models:Base"
+migrations = "migrations"           # Alembic revisions, committed; run at service start (store.engine)

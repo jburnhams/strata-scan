@@ -1,0 +1,23 @@
+# Example systemd user unit. Copy to ~/.config/systemd/user/strata-scan.service, adjust the paths, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now strata-scan
+# The unit starts the app through its console script, so it cannot drift from the repo: `strata-scan serve --help` is the contract.
+[Unit]
+Description=strata-scan (scanned books to pages and text)
+After=network.target
+
+[Service]
+WorkingDirectory=%h/path/to/strata-scan
+# `--locked` refuses to start if uv.lock and pyproject.toml disagree, instead of silently changing the environment.
+# systemd does not search ~/.local/bin, so give uv's full path (`command -v uv` shows it; %h is your home folder).
+ExecStart=%h/.local/bin/uv run --locked --no-dev strata-scan serve --host 127.0.0.1 --port 8368
+# The pictures (scans, pages, exports: hundreds of MB a book) live outside the checkout (see docs/deploying.md).
+Environment=STRATASCAN_DATA=%h/path/to/data
+# The records are in the shared database; omarchy-db refuses its live database unless this is set (see its adoption guide).
+Environment=OMARCHY_DB_LIVE=1
+# Where the strata-models service answers (its `ocr` role reads the pages); this is its default.
+Environment=STRATA_MODELS_URL=http://127.0.0.1:8366
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

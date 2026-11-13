@@ -2,17 +2,21 @@ import { Meta } from '@storybook/addon-docs/blocks'
 
 <Meta title="Introduction" />
 
-# python-app-template
+# strata-scan
 
-The template's web app, built on [strata-react](https://github.com/jburnhams/strata-react). Each
-story is a whole screen, opened through the app's own route tree at a URL, with the server put into
-one state by MSW (the same handlers the jsdom tests and the visual suite use). Use the toolbar to
-switch between light and dark.
+The web app for turning scanned books into pages and text, built on
+[strata-react](https://github.com/jburnhams/strata-react). Each story is a whole screen, opened
+through the app's own route tree at a URL, with the server put into one state by MSW (the same
+handlers the jsdom tests and the visual suite use), over sample data from the two real books.
+Use the toolbar to switch between light and dark.
 
-- **Greetings**: `useLoad` → `DataView` → `DataTable` with the sort in the URL, `RowAction` +
-  `useUndoable` + `UndoBar` to remove, `useSelection` + `BulkBar` to remove several,
-  `Field` + `AsyncButton` + `useAsyncAction` to send, `MetricStrip` for the figures.
-- **Log**: `useInfiniteLoad` over a cursor API → `InfiniteList`.
+- **Books**: `DataTable` with the sort in the URL, polled while a book is busy; `FileDropZone` +
+  `FileButton` to upload, `Field` + `AsyncButton` to add by path.
+- **Book**: `useJob` → `JobStatus` for the running stage, `Tabs` for pages, pictures and files,
+  `Thumbnail` links, `LinkCard`s for the downloads.
+- **Page**: `RegionEditor` for the cut (turn, crop, split a spread) and the pictures, the text
+  with the lines the reader was unsure of, `ChoiceGroup` for the kind, `useHotkeys` + `KeysLegend`
+  for the next and previous page.
 - **System**: a polled status read with `StaleNotice`, `Meter` with named thresholds,
   `CompositionBar`, `Status` words, `LinkCard`s.
 - **Settings**: `Tabs` with the tab in the URL, a form started from the server's values,

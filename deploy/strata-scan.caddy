@@ -1,0 +1,8 @@
+# Example Caddy snippet: the app under /strata-scan/ on a shared host. The app needs no configuration for the prefix (it gives every page
+# a relative <base href>); Caddy strips it. Uploads are whole scanned books, so allow large request bodies.
+handle_path /strata-scan/* {
+	request_body {
+		max_size 2GB
+	}
+	reverse_proxy 127.0.0.1:8368
+}

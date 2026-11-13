@@ -1,4 +1,4 @@
-"""Integration-suite fixtures: the CLI (in-process and as a real process) and the HTTP API over real on-disk files."""
+"""Integration-suite fixtures: the CLI (in-process and as a real process) and the HTTP API over the real database and files."""
 
 import contextlib
 import io
@@ -26,8 +26,8 @@ class Result:
 
 @pytest.fixture
 def cli():
-    """`cli('hello', 'World', '--json')` -> Result(stdout, stderr, code), in this process. Raises AssertionError with the output on a non-zero exit unless `check=False`."""
-    from app import cli as C
+    """`cli('books', '--json')` -> Result(stdout, stderr, code), in this process. Raises AssertionError with the output on a non-zero exit unless `check=False`."""
+    from stratascan import cli as C
 
     def run(*args, check=True):
         out, err = io.StringIO(), io.StringIO()
@@ -48,12 +48,12 @@ def cli():
 
 @pytest.fixture
 def cli_subprocess(isolated_env):
-    """The same through a real `python -m app` process: for the entry-point smoke test and anything that must not share this process's state."""
+    """The same through a real `python -m stratascan` process: for the entry-point smoke test and anything that must not share this process's state."""
 
     def run(*args, check=True):
         env = dict(os.environ, PYTHONPATH=os.path.join(ROOT, "src"), PYTHONWARNINGS="ignore")
         p = subprocess.run(
-            [sys.executable, "-m", "app", *map(str, args)], capture_output=True, text=True, env=env, timeout=300
+            [sys.executable, "-m", "stratascan", *map(str, args)], capture_output=True, text=True, env=env, timeout=300
         )
         r = Result(p.stdout, p.stderr, p.returncode)
         if check and p.returncode:
@@ -65,7 +65,16 @@ def cli_subprocess(isolated_env):
 
 @pytest.fixture
 def client():
-    """The HTTP API over the real on-disk data and settings files."""
-    from app.server.app import create_app
+    """The HTTP API in this process (no lifespan, so no pipeline thread): for the calls that do not run a stage."""
+    from stratascan.server.app import create_app
 
     return TestClient(create_app())
+
+
+@pytest.fixture
+def base_url(live_app, models_service):
+    """The whole app on a loopback port (its pipeline thread running), reading pages through the strata-models stand-in."""
+    from stratascan.server.app import create_app
+
+    with live_app(create_app()) as url:
+        yield url.rstrip("/")

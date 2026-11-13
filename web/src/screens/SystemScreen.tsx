@@ -1,5 +1,6 @@
-// The one question: "Is the app healthy, and will its disk hold?" The finding answers with the
-// data disk's state, from the same thresholds the meter draws; then the next questions in order:
+// The one question: "Can books be read here, and will the disk hold?" The finding answers with
+// strata-models first (without it no page is read), then the data disk's state, from the same
+// thresholds the meter draws; then the next questions in order:
 // how full is the disk and what is it full of (a Meter with named thresholds, a CompositionBar
 // with its table), what is running (Status words, never colour alone), and where to go next
 // (LinkCards). The read is polled; a poll that fails keeps the last readings on screen and says
@@ -39,14 +40,16 @@ export function ofSize(used: number, size: number) {
 export const usable = (disk: SystemStatus['disk']) => disk.used + disk.free
 
 /** The page's finding, from the disk the data folder is on. When the latest poll failed, it says so first and reads the disk as old news. */
-export function describeDisk({ disk }: SystemStatus, answering = true): string {
+export function describeDisk({ disk, models }: SystemStatus, answering = true): string {
   const share = disk.used / usable(disk)
   const crossed = crossedThreshold(share, diskThresholds)
   const left = `${format.bytes(disk.free)} free`
   if (!answering) return `The server is not answering. When last read, the data disk was ${format.percent(share)} full, with ${left}.`
+  if (!models.available) return `Pages cannot be read: strata-models is not answering at ${models.url}. Books can still be imported and cut. The data disk is ${format.percent(share)} full.`
+  if (!models.ocr_model) return `Pages cannot be read: strata-models at ${models.url} has no ocr role. The data disk is ${format.percent(share)} full.`
   if (!crossed) return `Everything is running. The data disk is ${format.percent(share)} full, with ${left}.`
   return crossed.tone === 'danger'
-    ? `The data disk is ${format.percent(share)} full, with ${left}. Free space or move the data folder in Settings before greetings stop saving.`
+    ? `The data disk is ${format.percent(share)} full, with ${left}. Free space or move the data folder in Settings before books stop importing (each scanned book takes a few hundred MB).`
     : `The data disk is ${format.percent(share)} full, with ${left}. Nothing needs doing yet.`
 }
 
@@ -108,7 +111,7 @@ export function SystemScreen() {
                   ['Server', <>{answering ? <Status tone="success">Answering</Status> : <Status tone="danger">Not answering</Status>} <span className="ml-2 tabular-nums">version {s.version}</span></>],
                   ['Python', <span className="tabular-nums">{s.python}</span>],
                   ['Platform', s.platform],
-                  ['Greetings kept', <span className="tabular-nums">{format.integer(s.messages)}</span>],
+                  ['Reading', s.models.available && s.models.ocr_model ? <><Status tone="success">Ready</Status> <span className="ml-2">{s.models.ocr_model} on strata-models</span></> : <Status tone="danger">{s.models.available ? 'No ocr role' : 'Not answering'}</Status>],
                 ] as const).map(([term, value]) => (
                   <div key={term} className="flex gap-6">
                     <dt className="w-28 shrink-0 text-muted-foreground">{term}</dt>
@@ -121,7 +124,7 @@ export function SystemScreen() {
             <section aria-labelledby="next" className="grid gap-3">
               <h2 id="next" className="type-heading">Go to</h2>
               <LinkCardList label="Places to go from here">
-                <LinkCard to="/settings" title="Settings" description="Change the default greeting, move the data folder, or choose light or dark." />
+                <LinkCard to="/settings" title="Settings" description="Move the data folder, set how many pages are worked on at once, or choose light or dark." />
                 <LinkCard href={withBase('/api/docs')} title="API reference" description="Every endpoint the server answers, with a form to try each one." />
                 <LinkCard href={withBase(paths.health)} title="Health check" description="The JSON a monitor polls to see that the server is up." />
               </LinkCardList>

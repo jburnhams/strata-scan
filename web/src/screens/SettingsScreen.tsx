@@ -7,7 +7,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useState, type FormEvent } from 'react'
 import { AsyncButton, ColorSchemeChoice, DataView, EmptyState, Field, Input, PageHeader, Skeleton, Tabs, useAsyncAction, useLoad } from 'strata-react'
-import { api, folderProblem, greetingProblem, keys, limits, type Settings } from '../api'
+import { api, folderProblem, keys, wholeProblem, type Settings } from '../api'
 
 const tabs = [
   { value: 'general', label: 'General' },
@@ -39,11 +39,11 @@ function General() {
   )
 }
 
-/** Mirrors the form: two fields with hints, then the button. */
+/** Mirrors the form: three fields with hints, then the button. */
 function FormSkeleton() {
   return (
     <div className="grid max-w-xl gap-6" aria-hidden>
-      {[0, 1].map(i => (
+      {[0, 1, 2].map(i => (
         <div key={i} className="grid gap-1.5">
           <Skeleton className="h-4 w-32" />
           <Skeleton className="h-9 w-full" />
@@ -57,33 +57,34 @@ function FormSkeleton() {
 
 export function SettingsForm({ current }: { current: Settings }) {
   const queryClient = useQueryClient()
-  const [greeting, setGreeting] = useState(current.greeting)
   const [folder, setFolder] = useState(current.data_dir)
-  const [problems, setProblems] = useState<{ greeting?: string; folder?: string }>({})
+  const [dpi, setDpi] = useState(current.max_dpi)
+  const [workers, setWorkers] = useState(current.workers)
+  const [problems, setProblems] = useState<{ folder?: string; dpi?: string; workers?: string }>({})
 
   const save = useAsyncAction(async () => {
-    await api.saveSettings({ greeting: greeting.trim(), data_dir: folder.trim() })
+    await api.saveSettings({ data_dir: folder.trim(), max_dpi: dpi.trim(), workers: workers.trim() })
     // Everything that reads the settings, or the folder they point at, reads again.
-    await Promise.all([keys.settings, keys.messages, keys.system].map(queryKey => queryClient.invalidateQueries({ queryKey })))
+    await Promise.all([keys.settings, keys.books, keys.system].map(queryKey => queryClient.invalidateQueries({ queryKey })))
   })
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault()
-    const found = {
-      greeting: greeting.trim() ? greetingProblem('greeting', greeting) : 'Enter the word greetings start with, such as Hello.',
-      folder: folderProblem(folder),
-    }
+    const found = { folder: folderProblem(folder), dpi: wholeProblem(dpi, 72, 1200), workers: wholeProblem(workers, 1, 32) }
     setProblems(found)
-    if (!found.greeting && !found.folder) void save.run()
+    if (!found.folder && !found.dpi && !found.workers) void save.run()
   }
 
   return (
     <form onSubmit={onSubmit} noValidate className="grid max-w-xl gap-6">
-      <Field label="Default greeting" hint={`Used when a greeting is sent without one. Up to ${limits.greeting} characters.`} error={problems.greeting}>
-        <Input value={greeting} onChange={e => setGreeting(e.target.value)} autoComplete="off" />
-      </Field>
-      <Field label="Data folder" hint="A full path. Greetings are kept in messages.json there; moving it starts an empty log." error={problems.folder}>
+      <Field label="Data folder" hint="A full path. The scans, pages, pictures and files are kept there, a few hundred MB a book; moving it does not move them." error={problems.folder}>
         <Input value={folder} onChange={e => setFolder(e.target.value)} autoComplete="off" spellCheck={false} />
+      </Field>
+      <Field label="Highest resolution" hint="Dots per inch, 72 to 1200. A PDF page is drawn at the resolution of the scan inside it, up to this." error={problems.dpi}>
+        <Input value={dpi} onChange={e => setDpi(e.target.value)} inputMode="numeric" autoComplete="off" />
+      </Field>
+      <Field label="Pages at once" hint="1 to 32. strata-models reads four at a time, so more than four only queue there." error={problems.workers}>
+        <Input value={workers} onChange={e => setWorkers(e.target.value)} inputMode="numeric" autoComplete="off" />
       </Field>
       <div className="flex flex-wrap items-center gap-3">
         <AsyncButton type="submit" variant="default" phase={save.phase} error={save.error} labels={{ idle: 'Save settings', pending: 'Saving…', done: 'Saved' }} />

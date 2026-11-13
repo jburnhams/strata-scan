@@ -1,8 +1,9 @@
+import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { createQueryClient } from 'strata-react'
 import { keys } from '../../src/api'
 import { systemStatus } from '../../src/mocks/fixtures'
-import { systemError, systemNearlyFull } from '../../src/mocks/handlers'
+import { systemError, systemNearlyFull, systemNoModels } from '../../src/mocks/handlers'
 import { openApp, screen } from '../utils/render'
 import { server } from '../utils/server'
 
@@ -14,7 +15,8 @@ describe('System', () => {
     expect(meter).toHaveAttribute('aria-valuenow', String(301.6e9))
     expect(screen.getByRole('table', { name: /in all/ })).toHaveTextContent('This app’s data')
     expect(screen.getByText('Answering')).toBeInTheDocument()
-    expect(screen.getByText('/home/ada/.local/share/greetings')).toBeInTheDocument()
+    expect(screen.getByText('/home/ada/scans')).toBeInTheDocument()
+    expect(screen.getByText('tesseract-eng on strata-models')).toBeInTheDocument()
   })
 
   it('names the threshold a nearly full disk has crossed, and what to do', async () => {
@@ -26,8 +28,21 @@ describe('System', () => {
 
   it('links to settings in the app and to the API outside it', async () => {
     openApp('/system')
-    expect(await screen.findByRole('link', { name: /^Settings/ , description: /Change the default greeting/ })).toHaveAttribute('href', '/settings')
+    expect(await screen.findByRole('link', { name: /^Settings/ , description: /Move the data folder/ })).toHaveAttribute('href', '/settings')
     expect(screen.getByRole('link', { name: /API reference/ })).toHaveAttribute('href', '/api/docs')
+  })
+
+  it('says first that pages cannot be read when strata-models is away', async () => {
+    server.use(systemNoModels)
+    openApp('/system')
+    expect(await screen.findByText(/^Pages cannot be read: strata-models is not answering/)).toBeInTheDocument()
+    expect(screen.getByText('Not answering')).toBeInTheDocument()
+  })
+
+  it('says when strata-models answers without an ocr role', async () => {
+    server.use(http.get('*/api/system', () => HttpResponse.json({ ...systemStatus, models: { ...systemStatus.models, ocr_model: null } })))
+    openApp('/system')
+    expect(await screen.findByText('No ocr role')).toBeInTheDocument()
   })
 
   it('says the server could not answer', async () => {
@@ -43,7 +58,7 @@ describe('System, when a poll fails after a good one', () => {
     client.setQueryData(keys.system, systemStatus, { updatedAt: Date.UTC(2026, 10, 9, 8, 50) })
     server.use(systemError)
     openApp('/system', { client })
-    expect(await screen.findByText(/These readings are from 08:50\./)).toBeInTheDocument()
+    expect(await screen.findByText(/These readings are from .*08:50\./)).toBeInTheDocument()
     expect(screen.getByText('Not answering')).toBeInTheDocument()
     expect(screen.getByRole('meter', { name: 'Data disk space used' })).toBeInTheDocument()
   })

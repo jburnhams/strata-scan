@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useQueryClient } from '@tanstack/react-query'
 import { keys } from '../src/api'
 import { systemStatus } from '../src/mocks/fixtures'
-import { systemError, systemLoading, systemNearlyFull } from '../src/mocks/handlers'
+import { systemError, systemLoading, systemNearlyFull, systemNoModels } from '../src/mocks/handlers'
 import { AppAt } from './app-at'
 
 const meta = {
@@ -16,6 +16,8 @@ type Story = StoryObj<typeof meta>
 
 export const Ready: Story = {}
 export const NearlyFull: Story = { beforeEach: ({ msw }) => msw.use(systemNearlyFull) }
+/** strata-models is not answering: nothing can be read. */
+export const NoReader: Story = { beforeEach: ({ msw }) => msw.use(systemNoModels) }
 export const Loading: Story = { beforeEach: ({ msw }) => msw.use(systemLoading) }
 export const ServerError: Story = { beforeEach: ({ msw }) => msw.use(systemError) }
 export const Phone: Story = { tags: ['visual-phone'] }
