@@ -101,7 +101,7 @@ def test_failures_are_said_in_words(make_book, tmp_path):
     def down(path, pdf, lang, dpi):
         raise pipeline.StageError("strata-models is not running")
 
-    r = pipeline.Runner(ocr=down)
+    r = pipeline.Runner(ocr=down, correct=None)
     b = make_book()
     r.run(pipeline.Task(b, ("read",)))
     assert book(b).error == "the book has no pages: find them first"
@@ -178,3 +178,67 @@ def test_a_book_exported_before_it_is_read_is_its_pictures_at_their_paper_size(m
     assert abs(float(box.height) - 1754 / 150 * 72) < 6
     assert pdf.metadata is not None
     assert pdf.metadata.title == book(b).title
+
+
+# ---- the correction pass -----------------------------------------------------------------------------------------------------------------
+def test_text_pages_are_corrected_and_both_texts_kept(make_book, monkeypatch):
+    """A text page's text is the correction (here: Tesseract's words in capitals), and the result keeps both; pictures, covers and blanks
+    are not sent; a page a person typed is never replaced."""
+    from books import tesseract_ocr
+
+    sent = []
+
+    def upper(path, text, model):
+        sent.append((path, text, model))
+        return text.upper()
+
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=upper)
+    b = make_book()
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["corrected"]]
+    assert texts
+    assert sent
+    assert all(m == "qwen3.5-9b-vl" for _, _, m in sent)
+    assert len(sent) == len(texts)  # no cover, picture or blank page was sent
+    for p in texts:
+        assert p.text == p.ocr["corrected"]["text"]
+        assert p.text == p.text.upper()
+        assert p.ocr["corrected"]["model"] == "qwen3.5-9b-vl"
+    with store.session() as s:
+        s.get(Page, texts[0].id).text, s.get(Page, texts[0].id).text_edited = "typed by hand", True
+    sent.clear()
+    r.run(pipeline.Task(b, ("read",)))
+    assert len(sent) == len(texts) - 1
+    assert next(p for p in pages_of(b) if p.id == texts[0].id).text == "typed by hand"
+
+
+def test_a_failed_or_implausible_correction_keeps_the_ocr_text(make_book, monkeypatch):
+    from books import tesseract_ocr
+
+    def down(path, text, model):
+        raise pipeline.StageError("strata-models could not correct the page: out of memory")
+
+    b = make_book()
+    pipeline.Runner(ocr=tesseract_ocr, correct=down).run(pipeline.Task(b, ("import", "detect", "read")))
+    texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr.get("corrected")]
+    assert texts
+    assert all("out of memory" in p.ocr["corrected"]["error"] for p in texts)
+    assert all(p.text and p.error is None for p in texts)  # Tesseract's text, and no page error
+    pipeline.Runner(ocr=tesseract_ocr, correct=lambda path, text, model: "A page of a book.").run(
+        pipeline.Task(b, ("read",))
+    )
+    after = [p for p in pages_of(b) if p.id in {t.id for t in texts}]
+    assert all("kept the OCR text" in p.ocr["corrected"]["error"] and p.text != "A page of a book." for p in after)
+    monkeypatch.setenv("STRATASCAN_CORRECT", "off")
+    called = []
+    pipeline.Runner(ocr=tesseract_ocr, correct=lambda *a: called.append(a) or "").run(pipeline.Task(b, ("read",)))
+    assert called == []
+    assert all(p.ocr["corrected"] is None for p in pages_of(b) if p.ocr)
+
+
+def test_plausible_corrections_stay_near_the_texts_length():
+    text = "Punch and Judy, with instructions how to manage the little wooden actors"
+    assert pipeline.plausible(text, text.replace("Judy", "JUDY"))
+    assert not pipeline.plausible(text, "")
+    assert not pipeline.plausible(text, "Punch")
+    assert not pipeline.plausible(text, text + " This page shows the title of a book about puppets and their history.")

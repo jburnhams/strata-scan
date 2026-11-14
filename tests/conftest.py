@@ -21,12 +21,13 @@ def _database(db_env):
 
 @pytest.fixture
 def runner():
-    """A pipeline.Runner whose OCR is the real `tesseract` command (tests/utils/books.py), in place of the strata-models service."""
+    """A pipeline.Runner whose OCR is the real `tesseract` command (tests/utils/books.py), in place of the strata-models service, and with no
+    correction pass (a vision-language model; test_pipeline.py tests it with a stand-in)."""
     from books import tesseract_ocr
 
     from stratascan import pipeline
 
-    return pipeline.Runner(ocr=tesseract_ocr)
+    return pipeline.Runner(ocr=tesseract_ocr, correct=None)
 
 
 @pytest.fixture

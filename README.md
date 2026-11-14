@@ -22,7 +22,7 @@ uv run strata-scan run 1 read export            # run stages again (import, dete
 uv run strata-scan serve                        # the web app on http://127.0.0.1:8368/
 ```
 
-Reading needs strata-models running with its `ocr` role (`STRATA_MODELS_URL`, default `http://127.0.0.1:8366`), which needs the `tesseract` command (Tesseract 5 and its `eng` data) on that machine. The records need a database: the shared one by default (see AGENTS.md, Database), or `STRATASCAN_DATABASE_URL=sqlite:////abs/path/scan.db` for a trial run (`uv run dbtool migrate --url ...` once). Pictures go in the data folder (`strata-scan set data_dir /abs/folder` or `STRATASCAN_DATA`). Settings: `max_dpi` (600: the most a PDF page is drawn at) and `workers` (4: pages worked on at once).
+Reading needs strata-models running with its `ocr` role (`STRATA_MODELS_URL`, default `http://127.0.0.1:8366`), which needs the `tesseract` command (Tesseract 5 and its `eng` data) on that machine. The records need a database: the shared one by default (see AGENTS.md, Database), or `STRATASCAN_DATABASE_URL=sqlite:////abs/path/scan.db` for a trial run (`uv run dbtool migrate --url ...` once). Pictures go in the data folder (`strata-scan set data_dir /abs/folder` or `STRATASCAN_DATA`). Settings: `max_dpi` (600: the most a PDF page is drawn at), `workers` (4: pages worked on at once) and `correct` (`qwen3.5-9b-vl`: the vision-language model that corrects each text page's OCR against the page, about 18 s of GPU a page; `off` for Tesseract alone). Correction needs that model on strata-models.
 
 For hot-reload frontend development, run `./strata-scan serve` in one terminal and `cd web && npm run dev` in another (Vite proxies `/api` to `127.0.0.1:8368`).
 

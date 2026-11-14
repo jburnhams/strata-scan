@@ -5,8 +5,11 @@
   max_dpi    the highest resolution a PDF page is drawn at on import (default 600). A page is drawn at the resolution of the scan inside it
              (Internet Archive books are 360-500 dpi), so this only limits a very large one.
   workers    pages worked on at once (default 4: strata-models runs four CPU jobs beside each other, so a fifth would only queue there).
+  correct    the vision-language model that corrects each text page's OCR against the page (default `qwen3.5-9b-vl`), or `off`. On
+             strata-models' ocr-pages eval (10 hard pages of two 19th-century books) Tesseract alone got 5.1 % of characters wrong and
+             Tesseract then this correction 0.3 %, at about 18 s of GPU time a page; the lines and their boxes stay Tesseract's.
 
-The environment variables STRATASCAN_DATA, STRATASCAN_MAX_DPI and STRATASCAN_WORKERS override the file. The file handling, precedence and
+The environment variables STRATASCAN_DATA, STRATASCAN_MAX_DPI, STRATASCAN_WORKERS and STRATASCAN_CORRECT override the file. The file handling, precedence and
 validation are [strata_python.settings](https://github.com/jburnhams/strata-python); this module only declares the app's settings."""
 
 import os
@@ -31,6 +34,14 @@ def whole_number(lo: int, hi: int) -> Callable[[str], str]:
     return norm
 
 
+def model_or_off(v: str) -> str:
+    """A strata-models model key, or `off`."""
+    t = str(v).strip()
+    if not t:
+        raise ValueError("must be a model key (such as qwen3.5-9b-vl) or off")
+    return "off" if t.lower() == "off" else t
+
+
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_DATA_DIR = os.path.join(REPO, "data")
 
@@ -40,6 +51,7 @@ SETTINGS = Settings(
         Setting("data_dir", default=DEFAULT_DATA_DIR, normalise=absolute_path, env="STRATASCAN_DATA"),
         Setting("max_dpi", default="600", normalise=whole_number(72, 1200)),
         Setting("workers", default="4", normalise=whole_number(1, 32)),
+        Setting("correct", default="qwen3.5-9b-vl", normalise=model_or_off),
     ],
 )
 KNOWN = SETTINGS.keys
@@ -69,6 +81,12 @@ def max_dpi() -> int:
 
 def workers() -> int:
     return int(SETTINGS.get("workers"))
+
+
+def correct_model() -> str | None:
+    """The model that corrects OCR text, or None when correction is off."""
+    v = str(SETTINGS.get("correct"))
+    return None if v == "off" else v
 
 
 def all_settings() -> dict[str, Any]:

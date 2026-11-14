@@ -54,7 +54,7 @@ def test_add_books_run_and_export(capsys, tmp_path, models_service):
     assert "#1" in capsys.readouterr().out
     with pytest.raises(SystemExit, match="no book 99"):
         cli.main(["run", "99", "read"])
-    assert {j["params"]["dpi"] for j in models_service.submitted} == {150}
+    assert {j["params"]["dpi"] for j in models_service.submitted if j["role"] == "ocr"} == {150}
 
 
 def test_set_and_serve_commands(capsys, monkeypatch):

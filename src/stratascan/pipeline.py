@@ -12,7 +12,12 @@ runs at a time, so two requests never write the same files; inside a stage, page
 strata-models service, the pixel work in OpenCV releases the GIL). Progress is the book's `stage`, `done` and `total`, which the web app
 polls; a failure is the book's `error` and the failing page's `error`, in words, and the stage carries on with the other pages.
 
-The OCR function is a parameter (`Runner(ocr=...)`) only so the strata-models service can be stood in for: by default it is the client."""
+After the OCR, a text page's text is corrected against the page by a vision-language model (`settings.correct_model`, `correct`): the
+words change, Tesseract's lines and boxes stay, and the result keeps both texts (`ocr["corrected"]`). A failed or implausible correction
+(far shorter or longer than what it corrected) leaves Tesseract's text, and the page says so in `ocr["corrected"]["error"]`.
+
+The OCR and correction functions are parameters (`Runner(ocr=..., correct=...)`) only so the strata-models service can be stood in for: by
+default they are the client."""
 
 import logging
 import os
@@ -49,6 +54,28 @@ def models_ocr(path: str, pdf: str, lang: str, dpi: int) -> dict[str, Any]:
         raise StageError(f"strata-models could not read the page: {e}") from e
 
 
+# (page png, Tesseract's text, model) -> the corrected text. The preset is strata-models' ocr-correct-v1, the one its ocr-pages eval measured.
+CorrectFn = Callable[[str, str, str], str]
+
+
+def models_correct(path: str, text: str, model: str) -> str:
+    params = {"image": path, "prompt": text, "system_preset": "ocr-correct-v1", "max_tokens": 4096, "temperature": 0.0}
+    try:
+        r = sm.run("vision-language", params, app=APP, model=model)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    except sm.Unavailable as e:  # pyright: ignore[reportUnknownMemberType]
+        raise StageError(f"strata-models is not running ({e})") from e
+    except sm.JobFailed as e:  # pyright: ignore[reportUnknownMemberType]
+        raise StageError(f"strata-models could not correct the page: {e}") from e
+    return str(r.get("text") or "") if isinstance(r, dict) else ""  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+
+
+def plausible(before: str, after: str) -> bool:
+    """Is a correction a correction? It fixes letters and words, so its length stays near the text's: far shorter means it stopped or left
+    lines out, far longer that it added words or described the page."""
+    a, b = len(before.strip()), len(after.strip())
+    return b > 0 and 0.7 * a <= b <= 1.3 * a + 20
+
+
 class StageError(RuntimeError):
     """A failure to show the person, in words."""
 
@@ -77,8 +104,9 @@ def write_jpeg(path: str, img: geometry.Image, long_side: int) -> None:
 
 
 class Runner:
-    def __init__(self, ocr: OcrFn = models_ocr) -> None:
+    def __init__(self, ocr: OcrFn = models_ocr, correct: CorrectFn | None = models_correct) -> None:
         self.ocr = ocr
+        self.correct = correct
         self._q: deque[Task] = deque()
         self._cv = threading.Condition()
         self._busy = False
@@ -315,19 +343,26 @@ class Runner:
         boxes = [figures.pad_box(b, img.shape[1], img.shape[0]) for b in figures.find_figures(img, words)]
         confs = [c for _, c in words]
         sure = sum(1 for c in confs if c >= figures.WORD_CONF)
+        kind = page.kind
+        if (
+            page.ocr is None and kind == "text"
+        ):  # the first read guesses the kind; a person's or an earlier read's stays
+            area = sum(w * h for _, _, w, h in boxes) / float(img.shape[0] * img.shape[1])
+            kind = "picture" if area > 0.3 and sure < 25 else "blank" if not boxes and sure < 3 else "text"
+        r = dict(r, corrected=self.correct_page(page, png, r, sure, kind))
         with store.session() as s:
             p = s.get(Page, page.id)
             if p is None:
                 return
-            first = p.ocr is None
+            if p.ocr is None and p.kind == "text":  # as guessed above, unless a person set the kind meanwhile
+                p.kind = kind
             p.ocr, p.ocr_model, p.error = r, str(r.get("model") or r.get("engine") or "ocr"), None
             p.ocr_conf = round(sum(confs) / len(confs), 1) if confs else None
-            img_area = float(img.shape[0] * img.shape[1])
-            if first and p.kind == "text":
-                area = sum(w * h for _, _, w, h in boxes) / img_area
-                p.kind = "picture" if area > 0.3 and sure < 25 else "blank" if not boxes and sure < 3 else "text"
             if not p.text_edited:
-                p.text = clean_text(r, sure, p.kind)
+                fixed = r["corrected"]
+                p.text = (
+                    fixed["text"] if fixed and fixed.get("text") and p.kind == "text" else clean_text(r, sure, p.kind)
+                )
             lines = (p.text or "").splitlines()
             if p.label is None and p.kind == "text" and lines and export.is_running_head(lines[0], len(lines)):
                 p.label = export.page_number(lines[0])
@@ -342,6 +377,25 @@ class Runner:
             cut = [(f.id, f.x, f.y, f.w, f.h) for f in s.scalars(select(Figure).where(Figure.page_id == p.id))]
         for fid, x, y, w, h in cut:
             cv2.imwrite(files.figure_png(page.book_id, fid), img[y : y + h, x : x + w])
+
+    def correct_page(self, page: Page, png: str, r: dict[str, Any], sure: int, kind: str) -> dict[str, Any] | None:
+        """The correction of a page's OCR text, as {model, text} (or {model, error}), or None when there is none to do: correction off, a
+        page a person typed, or one with no text or that is not a text page (a cover, a picture, a blank)."""
+        model = settings.correct_model()
+        text = clean_text(r, sure, kind)
+        if self.correct is None or model is None or page.text_edited or kind != "text" or not text:
+            return None
+        try:
+            fixed = self.correct(png, text, model).strip()
+        except StageError as e:
+            log.warning("page %s: correction failed: %s", page.id, e)
+            return {"model": model, "error": str(e)}
+        if not plausible(text, fixed):
+            return {
+                "model": model,
+                "error": f"the correction was {len(fixed)} characters for {len(text)}: kept the OCR text",
+            }
+        return {"model": model, "text": fixed}
 
     def stage_export(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
         export.write_all(book_id, lambda d, t: self._progress(book_id, done=d, total=t))
