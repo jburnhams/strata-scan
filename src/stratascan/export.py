@@ -109,6 +109,24 @@ def paragraphs(ocr_lines: list[dict[str, Any]]) -> list[tuple[int, str]]:
     return out
 
 
+def corrected_lines(p: Page) -> list[dict[str, Any]]:
+    """A corrected page's lines with their OCR boxes (pipeline.correct_page): each corrected line in place of the OCR line it corrects,
+    when the correction kept the line count (it is asked to). Otherwise its text as one block at the top of the page, so no word is lost;
+    [] when the page's text is not the correction."""
+    ocr: dict[str, Any] = p.ocr or {}
+    fixed = cast(dict[str, Any], ocr.get("corrected") or {})
+    text = fixed.get("text")
+    if not text or p.text != text:
+        return []
+    all_lines = cast(list[dict[str, Any]], ocr.get("lines", []))
+    src = [all_lines[i] for i in cast(list[int], fixed.get("lines") or []) if i < len(all_lines)]
+    new = [ln for ln in str(text).splitlines() if ln.strip()]
+    if src and len(src) == len(new):
+        return [dict(ln, text=t) for ln, t in zip(src, new, strict=True)]
+    top = min((int(ln["box"][1]) for ln in src), default=0)
+    return [{"text": t, "box": [0, top + k, 0, 1], "block": -1} for k, t in enumerate(new)]
+
+
 def page_markdown(p: Page, figs: list[Figure]) -> str:
     items: list[tuple[int, str]] = []
     text_lines = list((p.text or "").splitlines())
@@ -117,8 +135,7 @@ def page_markdown(p: Page, figs: list[Figure]) -> str:
         body = [join_lines(chunk.splitlines()) for chunk in re.split(r"\n\s*\n", p.text or "")]
         items = [(-1, b) for b in body if b]
     else:
-        kept = set(text_lines)
-        lines = [ln for ln in p.ocr.get("lines", []) if ln["text"] in kept]
+        lines = corrected_lines(p) or [ln for ln in p.ocr.get("lines", []) if ln["text"] in set(text_lines)]
         if lines and is_running_head(str(lines[0]["text"]), len(lines)):
             lines = lines[1:]
         items = paragraphs(lines)

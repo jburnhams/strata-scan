@@ -49,3 +49,25 @@ def test_smaller_shrinks_only_big_pictures():
     assert export.smaller(Image.new("L", (3000, 4000))).size == (1800, 2400)
     assert export.smaller(Image.new("RGB", (100, 50))).mode == "RGB"
     assert export.smaller(None).size == (1, 1)
+
+
+def test_corrected_lines_take_the_place_of_the_ocr_lines_they_correct():
+    from stratascan.db.models import Page
+
+    ocr = {
+        "lines": [
+            line("Puncb and Judy", 100, 100, 800),
+            line("~~ hatching ~~", 100, 300, 800),
+            line("a puppet sbow", 100, 140, 600),
+        ],
+        "corrected": {"model": "m", "text": "Punch and Judy\na puppet show", "lines": [0, 2]},
+    }
+    p = Page(book_id=1, scan_id=1, position=1, text="Punch and Judy\na puppet show", ocr=ocr, text_edited=False)
+    fixed = export.corrected_lines(p)
+    assert [ln["text"] for ln in fixed] == ["Punch and Judy", "a puppet show"]
+    assert [ln["box"] for ln in fixed] == [ocr["lines"][0]["box"], ocr["lines"][2]["box"]]  # where Tesseract found them
+    # a correction that joined or split lines is still all there, as one block where the page's text began
+    p.text = ocr["corrected"]["text"] = "Punch and Judy, a puppet show"
+    assert [(ln["text"], ln["box"][1]) for ln in export.corrected_lines(p)] == [("Punch and Judy, a puppet show", 100)]
+    p.text = "typed over"  # the page's text is not the correction: the export uses the OCR lines as before
+    assert export.corrected_lines(p) == []

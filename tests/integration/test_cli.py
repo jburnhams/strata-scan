@@ -24,6 +24,12 @@ def test_a_book_from_the_command_line(cli, models_service, tmp_path):
     assert [(b["title"], b["pages"], b["stage"]) for b in books] == [("Punch and Judy", 4, "idle")]
     assert books[0]["read"] == 4
     assert len(models_service.jobs) >= 4  # every page went through the ocr role
+    fixes = [b for b in models_service.submitted if b["role"] == "vision-language"]
+    assert fixes
+    assert all(b["model"] == "qwen3.5-9b-vl" and b["params"]["system_preset"] == "ocr-correct-v1" for b in fixes)
+    assert all(
+        os.path.isfile(b["params"]["image"]) for b in fixes
+    )  # each text page went on to be corrected against its picture
     with open(os.path.join(files.book_dir(books[0]["id"]), "export", "book.md"), encoding="utf8") as f:
         md = f.read()
     assert md.startswith("# Punch and Judy\n\nJ. P. Collier")

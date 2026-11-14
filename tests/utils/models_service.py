@@ -1,6 +1,8 @@
 """A stand-in strata-models service on 127.0.0.1 for tests that go through the real client over real HTTP: the three endpoints the client
 uses for a job (health, submit, wait) and the registry. Its `ocr` role is the real `tesseract` (books.tesseract_ocr), so the text is
-real; only the queue, the GPU and the database of the real service are left out. Any other role fails the job, as the service does."""
+real; only the queue, the GPU and the database of the real service are left out. Its `vision-language` role stands in for the OCR correction
+(pipeline.models_correct): it answers the prompt (Tesseract's text) with "Puncb" put right, so a test sees a correction arrive. Any other role
+fails the job, as the service does."""
 
 import json
 import re
@@ -29,7 +31,15 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/health":
             return self._send(200, {"ok": True})
         if path == "/api/registry":
-            return self._send(200, {"roles": [{"key": "ocr", "model": "tesseract-eng"}]})
+            return self._send(
+                200,
+                {
+                    "roles": [
+                        {"key": "ocr", "model": "tesseract-eng"},
+                        {"key": "vision-language", "model": "qwen3.5-9b-vl"},
+                    ]
+                },
+            )
         m = re.fullmatch(r"/api/jobs/(\d+)", path)
         if m and int(m.group(1)) in self.server.jobs:
             return self._send(200, self.server.jobs[int(m.group(1))])
@@ -43,9 +53,12 @@ class _Handler(BaseHTTPRequestHandler):
         self.server.submitted.append(body)
         p = body.get("params", {})
         try:
-            if body.get("role") != "ocr":
+            if body.get("role") == "vision-language" and p.get("system_preset") == "ocr-correct-v1" and p.get("image"):
+                result = {"text": str(p.get("prompt", "")).replace("Puncb", "Punch"), "model": body.get("model")}
+            elif body.get("role") != "ocr":
                 raise ValueError(f"no role {body.get('role')!r}")
-            result = tesseract_ocr(p["path"], p["pdf"], p.get("lang", "eng"), p.get("dpi", 300))
+            else:
+                result = tesseract_ocr(p["path"], p["pdf"], p.get("lang", "eng"), p.get("dpi", 300))
             self.server.jobs[job_id] = {"id": job_id, "status": "done", "result": result}
         except Exception as e:
             self.server.jobs[job_id] = {"id": job_id, "status": "failed", "error": str(e)}
