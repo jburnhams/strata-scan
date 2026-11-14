@@ -379,7 +379,7 @@ class Runner:
             cv2.imwrite(files.figure_png(page.book_id, fid), img[y : y + h, x : x + w])
 
     def correct_page(self, page: Page, png: str, r: dict[str, Any], sure: int, kind: str) -> dict[str, Any] | None:
-        """The correction of a page's OCR text, as {model, text} (or {model, error}), or None when there is none to do: correction off, a
+        """The correction of a page's OCR text, as {model, text, lines: the OCR lines it corrected} (or {model, error}), or None when there is none to do: correction off, a
         page a person typed, or one with no text or that is not a text page (a cover, a picture, a blank)."""
         model = settings.correct_model()
         text = clean_text(r, sure, kind)
@@ -395,7 +395,8 @@ class Runner:
                 "model": model,
                 "error": f"the correction was {len(fixed)} characters for {len(text)}: kept the OCR text",
             }
-        return {"model": model, "text": fixed}
+        # the OCR lines it corrected, so the export can put each corrected line where its OCR line was (export.page_markdown)
+        return {"model": model, "text": fixed, "lines": kept_lines(r, sure, kind)}
 
     def stage_export(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
         export.write_all(book_id, lambda d, t: self._progress(book_id, done=d, total=t))
@@ -423,13 +424,19 @@ def keep_line(line: dict[str, Any], bar: float = 55.0) -> bool:
     return sum(confs) / len(confs) >= bar or sum(c >= 75 for c in confs) >= 0.6 * len(confs)
 
 
-def clean_text(ocr: dict[str, Any], sure_words: int, kind: str = "text") -> str:
-    """The page's text from the OCR: its lines, minus the noise (`keep_line`). A page with almost no confident words has no text; on a
-    cover or a picture page, where most of what Tesseract sees is not type, the bar is higher."""
+def kept_lines(ocr: dict[str, Any], sure_words: int, kind: str = "text") -> list[int]:
+    """Which of the OCR's lines are the page's text (their indices): its lines minus the noise (`keep_line`). A page with almost no
+    confident words has none; on a cover or a picture page, where most of what Tesseract sees is not type, the bar is higher."""
     if sure_words < 3:
-        return ""
+        return []
     bar = 75.0 if kind in ("cover", "picture") else 55.0
-    return "\n".join(str(ln["text"]) for ln in ocr.get("lines", []) if keep_line(ln, bar))
+    return [i for i, ln in enumerate(ocr.get("lines", [])) if keep_line(ln, bar)]
+
+
+def clean_text(ocr: dict[str, Any], sure_words: int, kind: str = "text") -> str:
+    """The page's text from the OCR: its kept lines (`kept_lines`), one a line."""
+    lines = ocr.get("lines", [])
+    return "\n".join(str(lines[i]["text"]) for i in kept_lines(ocr, sure_words, kind))
 
 
 def scan_dpi(page: Page) -> int:

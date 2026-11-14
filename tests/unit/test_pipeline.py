@@ -204,6 +204,13 @@ def test_text_pages_are_corrected_and_both_texts_kept(make_book, monkeypatch):
         assert p.text == p.ocr["corrected"]["text"]
         assert p.text == p.text.upper()
         assert p.ocr["corrected"]["model"] == "qwen3.5-9b-vl"
+    r.run(
+        pipeline.Task(b, ("export",))
+    )  # the corrected lines are what the Markdown says, not dropped for not matching the OCR's
+    with open(os.path.join(files.book_dir(b), "export", "book.md"), encoding="utf8") as f:
+        md = f.read()
+    assert "PUPPETS" in md
+    assert "puppets" not in md
     with store.session() as s:
         s.get(Page, texts[0].id).text, s.get(Page, texts[0].id).text_edited = "typed by hand", True
     sent.clear()
