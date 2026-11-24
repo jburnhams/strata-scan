@@ -13,6 +13,7 @@ Jonathan asked for the latest shared libraries, and for the results of strata-mo
 - **Rebuild** (page-rebuild, 20 pages, candidate full-opus): stage `rebuild`, the Set in type button: each text page set again in matched type with its figures and rules, into `book-rebuilt.pdf`. Only run when asked. Ink agreement 76 % with the scan, Tesseract in Times 37 %.
 - `export.py` (review): a body line the layout missed, or a corrected line with no like among the OCR's, is never dropped with a running head; a block's lines keep the layout's order; a line part text and part page number is text (`tests/unit/test_export.py`).
 - `web/tests/visual/baselines/`: 30 rewritten by the CI workflow for strata-react 1.3.7 and the Set in type button. `AGENTS.md` follows.
+- `pipeline.py`: the rebuild does one page at a time (a run of 14 hard pages ran strata-models out of memory; its font-match fix is strata-models #116, which the rebuild needs).
 - The page-rebuild report's own pick is `full-every-face` (78 %, the fonts tried exhaustively). It is 2 points over the shortlist, under the 3 the eval asks for a change, and twice the time, so the font-match default Jonathan chose on 2026-11-23 stays.
 
 ## 2026-11-14

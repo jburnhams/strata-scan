@@ -245,12 +245,14 @@ class Runner:
         with store.session() as s:
             s.execute(update(Book).where(Book.id == book_id).values(**values))
 
-    def _each(self, book_id: int, items: list[Any], work: Callable[[Any], None]) -> list[str]:
-        """`work` on every item, `settings.workers` at once, counting progress; the failures, in words."""
+    def _each(
+        self, book_id: int, items: list[Any], work: Callable[[Any], None], at_once: int | None = None
+    ) -> list[str]:
+        """`work` on every item, `settings.workers` (or `at_once`) at once, counting progress; the failures, in words."""
         errors: list[str] = []
         self._progress(book_id, done=0, total=len(items))
         done = 0
-        with ThreadPoolExecutor(max_workers=settings.workers()) as pool:
+        with ThreadPoolExecutor(max_workers=at_once or settings.workers()) as pool:
             for err in pool.map(partial(_catch, work), items):
                 done += 1
                 if err:
@@ -467,7 +469,9 @@ class Runner:
             todo = [p for p in s.scalars(q.order_by(Page.position)) if (p.ocr or {}).get("lines")]
         if not todo:
             raise StageError("there are no read text pages to set again: read the book first")
-        errors = self._each(book_id, todo, self.rebuild_one)
+        # one at a time: a type fit is minutes of CPU and the heaviest job strata-models runs for this app (fourteen queued pages once ran the
+        # service out of memory, 2026-11-24)
+        errors = self._each(book_id, todo, self.rebuild_one, at_once=1)
         if errors:
             self._progress(book_id, error=f"{len(errors)} of {len(todo)} pages could not be set again: {errors[0]}")
 
