@@ -88,7 +88,7 @@ EDGE = 0.85  # share of each side of a glyph's outline that is ink on a missing-
 
 def is_box(ink: Mask) -> bool:
     """Whether a glyph's ink is a frame (the box a font draws for a glyph it lacks): its four outermost rows and columns are inked through."""
-    rows, cols = np.flatnonzero(ink.any(1)), np.flatnonzero(ink.any(0))
+    rows, cols = np.nonzero(ink.any(1))[0], np.nonzero(ink.any(0))[0]
     if len(rows) < 6 or len(cols) < 6:
         return False
     g = ink[rows[0] : rows[-1] + 1, cols[0] : cols[-1] + 1]
