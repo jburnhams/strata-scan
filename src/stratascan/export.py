@@ -149,22 +149,23 @@ def layout_items(p: Page, lines: list[dict[str, Any]]) -> list[tuple[int, str]] 
     blocks = cast(list[dict[str, Any]], layout.get("blocks") or [])
     if not blocks:
         return None
-    mine: dict[float, list[tuple[int, dict[str, Any]]]] = {}  # block -> its lines, each with its place in the block
-    cur: float = -1.0
+    # (block, 1 for text of its own after that block) -> its lines, each with its place in the block; -1 is text before any block
+    mine: dict[tuple[int, int], list[tuple[int, dict[str, Any]]]] = {}
+    cur = (-1, 0)
     place = 0
     for ln in lines:
         found = None if ln.get("guess") else block_of(ln, blocks)
         if found is not None:
-            cur, place = float(found[0]), found[1]
-        elif cur >= 0 and cur.is_integer() and str(blocks[int(cur)]["role"]) in DROP:
-            cur += 0.5  # text of its own after a running head: never dropped with it
+            cur, place = (found[0], 0), found[1]
+        elif cur[0] >= 0 and str(blocks[cur[0]]["role"]) in DROP:
+            cur = (cur[0], 1)  # text of its own after a running head: never dropped with it
         mine.setdefault(cur, []).append((place, dict(ln, block=cur)))
     out: list[tuple[int, str]] = []
     for i in sorted(mine):
         got = [
             ln for _, ln in sorted(mine[i], key=lambda t: t[0])
         ]  # stable: a borrowed place stays after the line it borrowed from
-        role = str(blocks[int(i)]["role"]) if i >= 0 and i.is_integer() else "body"
+        role = str(blocks[i[0]]["role"]) if i[0] >= 0 and not i[1] else "body"
         if role in DROP:
             continue
         if role == "heading":
