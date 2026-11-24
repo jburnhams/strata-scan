@@ -53,12 +53,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.server.submitted.append(body)
         p = body.get("params", {})
         try:
-            if body.get("role") == "vision-language" and p.get("system_preset") == "ocr-correct-v1" and p.get("image"):
+            if body.get("role") == "vision-language" and p.get("system_preset") == "ocr-correct-v2" and p.get("image"):
                 result = {"text": str(p.get("prompt", "")).replace("Puncb", "Punch"), "model": body.get("model")}
             elif body.get("role") != "ocr":
                 raise ValueError(f"no role {body.get('role')!r}")
             else:
-                result = tesseract_ocr(p["path"], p["pdf"], p.get("lang", "eng"), p.get("dpi", 300))
+                result = tesseract_ocr(
+                    p["path"], p.get("pdf") or p["path"] + ".clean.pdf", p.get("lang", "eng"), p.get("dpi", 300)
+                )
             self.server.jobs[job_id] = {"id": job_id, "status": "done", "result": result}
         except Exception as e:
             self.server.jobs[job_id] = {"id": job_id, "status": "failed", "error": str(e)}

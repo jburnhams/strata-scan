@@ -4,6 +4,7 @@
     detect   each scan's pages are found (geometry.find_pages), drawn (pages/<id>.png) and numbered in reading order
     read     each page is read by strata-models' `ocr` role (lines, words, a searchable PDF page), its pictures found (figures.py) and cut out,
              and its kind guessed (text, picture, blank, cover)
+    rebuild  (only when asked) each text page is set again in matching type (layout.rebuild_page)
     export   the book's files are written (export.py)
 
 A stage works on the whole book or on some pages (`pages`: after a person moves a crop, only that page is drawn and read again). Hand work
@@ -12,8 +13,10 @@ runs at a time, so two requests never write the same files; inside a stage, page
 strata-models service, the pixel work in OpenCV releases the GIL). Progress is the book's `stage`, `done` and `total`, which the web app
 polls; a failure is the book's `error` and the failing page's `error`, in words, and the stage carries on with the other pages.
 
-After the OCR, a text page's text is corrected against the page by a vision-language model (`settings.correct_model`, `correct`): the
-words change, Tesseract's lines and boxes stay, and the result keeps both texts (`ocr["corrected"]`). A failed or implausible correction
+After the OCR, a text page is read by Tesseract again from a cleaned picture (`reread`: the eval ocr-hard's `adaptive`) and that text is
+corrected against the page by a vision-language model (`settings.correct_model`, `correct`): the words change, the first reading's lines and
+boxes stay, and the result keeps both texts (`ocr["corrected"]`). Its layout is read too (`settings.layout_model`, `layout.read_layout`:
+`ocr["layout"]`), which the Markdown and the rebuild follow. A failed or implausible correction
 (far shorter or longer than what it corrected) leaves Tesseract's text, and the page says so in `ocr["corrected"]["error"]`.
 
 The OCR and correction functions are parameters (`Runner(ocr=..., correct=...)`) only so the strata-models service can be stood in for: by
@@ -31,15 +34,22 @@ from typing import Any
 
 import cv2
 import numpy as np
-import strata_models_client as sm  # pyright: ignore[reportMissingTypeStubs]
 from sqlalchemy import delete, select, update
+from strata_python.clients import models as sm
 
-from stratascan import export, figures, files, geometry, settings, sources, store
+from stratascan import export, figures, files, geometry, layout, settings, sources, store
 from stratascan.db.models import Book, Figure, Page, Scan
 
 log = logging.getLogger("stratascan")
 APP = "strata-scan"
-STAGES = ("import", "detect", "read", "export")
+STAGES = ("import", "detect", "read", "export")  # a whole book
+ALL_STAGES = (
+    "import",
+    "detect",
+    "read",
+    "rebuild",
+    "export",
+)  # with the one only done when asked (minutes and cents a page)
 # (page png, pdf to write, languages, the scan's dpi) -> the ocr role's answer. The dpi matters twice: Tesseract sizes type by it, and the
 # PDF page it writes is the picture's pixels at that dpi (without it a 500 dpi page came out as a 1 m tall PDF page).
 OcrFn = Callable[[str, str, str, int], dict[str, Any]]
@@ -47,26 +57,42 @@ OcrFn = Callable[[str, str, str, int], dict[str, Any]]
 
 def models_ocr(path: str, pdf: str, lang: str, dpi: int) -> dict[str, Any]:
     try:
-        return dict(sm.run("ocr", {"path": path, "pdf": pdf, "lang": lang, "dpi": dpi}, app=APP))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-    except sm.Unavailable as e:  # pyright: ignore[reportUnknownMemberType]
+        return dict(sm.run("ocr", {"path": path, "pdf": pdf, "lang": lang, "dpi": dpi}, app=APP))
+    except sm.Unavailable as e:
         raise StageError(f"strata-models is not running ({e}); start it, then read the pages again") from e
-    except sm.JobFailed as e:  # pyright: ignore[reportUnknownMemberType]
+    except sm.JobFailed as e:
         raise StageError(f"strata-models could not read the page: {e}") from e
 
 
-# (page png, Tesseract's text, model) -> the corrected text. The preset is strata-models' ocr-correct-v1, the one its ocr-pages eval measured.
+# (page png, languages, dpi) -> the ocr role's answer for the page cleaned first. Only its text is used: it is the one corrected (ocr-hard,
+# 2026-11-24: Tesseract on the adaptively thresholded page, then Haiku, 0.27 % of characters wrong on ten hard pages; plain Tesseract then
+# Haiku 0.88 %, then qwen3.5-9b 3.7 %, alone 23 %).
+RereadFn = Callable[[str, str, int], dict[str, Any]]
+CLEAN = "adaptive"
+
+
+def models_reread(path: str, lang: str, dpi: int) -> dict[str, Any]:
+    try:
+        return dict(sm.run("ocr", {"path": path, "lang": lang, "dpi": dpi, "clean": CLEAN}, app=APP))
+    except (sm.Unavailable, sm.JobFailed) as e:
+        raise StageError(f"strata-models could not read the cleaned page: {e}") from e
+
+
+# (page png, Tesseract's text, model) -> the corrected text. The preset is strata-models' ocr-correct-v2, the one its ocr-hard eval measured.
 CorrectFn = Callable[[str, str, str], str]
 
 
 def models_correct(path: str, text: str, model: str) -> str:
-    params = {"image": path, "prompt": text, "system_preset": "ocr-correct-v1", "max_tokens": 4096, "temperature": 0.0}
+    params: dict[str, Any] = {"image": path, "prompt": text, "system_preset": "ocr-correct-v2", "max_tokens": 4096}
+    if not model.endswith("-api"):  # the local models; a cloud model runs as the eval ran it
+        params["temperature"] = 0.0
     try:
-        r = sm.run("vision-language", params, app=APP, model=model)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-    except sm.Unavailable as e:  # pyright: ignore[reportUnknownMemberType]
+        r = sm.run("vision-language", params, app=APP, model=model)
+    except sm.Unavailable as e:
         raise StageError(f"strata-models is not running ({e})") from e
-    except sm.JobFailed as e:  # pyright: ignore[reportUnknownMemberType]
+    except sm.JobFailed as e:
         raise StageError(f"strata-models could not correct the page: {e}") from e
-    return str(r.get("text") or "") if isinstance(r, dict) else ""  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    return str(r.get("text") or "")
 
 
 def plausible(before: str, after: str) -> bool:
@@ -104,9 +130,17 @@ def write_jpeg(path: str, img: geometry.Image, long_side: int) -> None:
 
 
 class Runner:
-    def __init__(self, ocr: OcrFn = models_ocr, correct: CorrectFn | None = models_correct) -> None:
+    def __init__(
+        self,
+        ocr: OcrFn = models_ocr,
+        correct: CorrectFn | None = models_correct,
+        reread: RereadFn | None = models_reread,
+        run_model: layout.RunFn | None = layout.models_run,
+    ) -> None:
         self.ocr = ocr
         self.correct = correct
+        self.reread = reread
+        self.run_model = run_model  # None: no layout (tests)
         self._q: deque[Task] = deque()
         self._cv = threading.Condition()
         self._busy = False
@@ -129,9 +163,9 @@ class Runner:
             self._thread = None
 
     def submit(self, book_id: int, stages: Sequence[str], pages: Iterable[int] | None = None) -> None:
-        bad = [s for s in stages if s not in STAGES]
+        bad = [s for s in stages if s not in ALL_STAGES]
         if bad:
-            raise ValueError(f"no stage {bad[0]!r} (stages: {', '.join(STAGES)})")
+            raise ValueError(f"no stage {bad[0]!r} (stages: {', '.join(ALL_STAGES)})")
         t = Task(book_id, tuple(stages), None if pages is None else tuple(pages))
         with store.session() as s:  # shows as waiting at once, before the thread picks it up
             s.execute(
@@ -149,7 +183,7 @@ class Runner:
             left = list(s.execute(select(Book.id, Book.stage).where(Book.stage != "idle")).all())
         for book_id, stage in left:
             with self._cv:
-                self._q.append(Task(book_id, STAGES[STAGES.index(stage) :] if stage in STAGES else ("detect", "read")))
+                self._q.append(Task(book_id, resume_from(stage)))
                 self._cv.notify_all()
 
     def idle(self) -> bool:
@@ -211,12 +245,14 @@ class Runner:
         with store.session() as s:
             s.execute(update(Book).where(Book.id == book_id).values(**values))
 
-    def _each(self, book_id: int, items: list[Any], work: Callable[[Any], None]) -> list[str]:
-        """`work` on every item, `settings.workers` at once, counting progress; the failures, in words."""
+    def _each(
+        self, book_id: int, items: list[Any], work: Callable[[Any], None], at_once: int | None = None
+    ) -> list[str]:
+        """`work` on every item, `settings.workers` (or `at_once`) at once, counting progress; the failures, in words."""
         errors: list[str] = []
         self._progress(book_id, done=0, total=len(items))
         done = 0
-        with ThreadPoolExecutor(max_workers=settings.workers()) as pool:
+        with ThreadPoolExecutor(max_workers=at_once or settings.workers()) as pool:
             for err in pool.map(partial(_catch, work), items):
                 done += 1
                 if err:
@@ -281,6 +317,7 @@ class Runner:
                         files.preview(book_id, "page", pid),
                         files.preview(book_id, "thumb", pid),
                         files.ocr_pdf(book_id, pid),
+                        files.rebuilt_pdf(book_id, pid),
                     )
                 for i, g in enumerate(found):
                     cover = g.confidence <= 0.2 and (scan.position <= 2 or scan.position >= last - 1)
@@ -349,7 +386,9 @@ class Runner:
         ):  # the first read guesses the kind; a person's or an earlier read's stays
             area = sum(w * h for _, _, w, h in boxes) / float(img.shape[0] * img.shape[1])
             kind = "picture" if area > 0.3 and sure < 25 else "blank" if not boxes and sure < 3 else "text"
-        r = dict(r, corrected=self.correct_page(page, png, r, sure, kind))
+        corrected = self.correct_page(page, png, r, sure, kind, lang)
+        r = dict(r, corrected=corrected, layout=self.layout_page(page, png, r, sure, kind))
+        files.remove(files.rebuilt_pdf(page.book_id, page.id))  # set from the reading this one replaces
         with store.session() as s:
             p = s.get(Page, page.id)
             if p is None:
@@ -378,7 +417,9 @@ class Runner:
         for fid, x, y, w, h in cut:
             cv2.imwrite(files.figure_png(page.book_id, fid), img[y : y + h, x : x + w])
 
-    def correct_page(self, page: Page, png: str, r: dict[str, Any], sure: int, kind: str) -> dict[str, Any] | None:
+    def correct_page(
+        self, page: Page, png: str, r: dict[str, Any], sure: int, kind: str, lang: str
+    ) -> dict[str, Any] | None:
         """The correction of a page's OCR text, as {model, text, lines: the OCR lines it corrected} (or {model, error}), or None when there is none to do: correction off, a
         page a person typed, or one with no text or that is not a text page (a cover, a picture, a blank)."""
         model = settings.correct_model()
@@ -386,20 +427,83 @@ class Runner:
         if self.correct is None or model is None or page.text_edited or kind != "text" or not text:
             return None
         try:
-            fixed = self.correct(png, text, model).strip()
+            prompt = self.cleaned_text(png, lang, scan_dpi(page), kind, text)
+            fixed = self.correct(png, prompt, model).strip()
         except StageError as e:
             log.warning("page %s: correction failed: %s", page.id, e)
             return {"model": model, "error": str(e)}
-        if not plausible(text, fixed):
+        if not plausible(prompt, fixed):
             return {
                 "model": model,
-                "error": f"the correction was {len(fixed)} characters for {len(text)}: kept the OCR text",
+                "error": f"the correction was {len(fixed)} characters for {len(prompt)}: kept the OCR text",
             }
         # the OCR lines it corrected, so the export can put each corrected line where its OCR line was (export.page_markdown)
         return {"model": model, "text": fixed, "lines": kept_lines(r, sure, kind)}
 
+    def cleaned_text(self, png: str, lang: str, dpi: int, kind: str, text: str) -> str:
+        """The text to correct: Tesseract's reading of the cleaned page, unless there is none, or cleaning lost much of the page."""
+        if self.reread is None:
+            return text
+        r = self.reread(png, lang, dpi)
+        sure = sum(1 for ln in r.get("lines", []) for w in ln.get("words", []) if float(w["conf"]) >= figures.WORD_CONF)
+        cleaned = clean_text(r, sure, kind)
+        return cleaned if len(cleaned) >= 0.7 * len(text) else text
+
+    def layout_page(self, page: Page, png: str, r: dict[str, Any], sure: int, kind: str) -> dict[str, Any] | None:
+        """The page's layout (layout.read_layout), or {model, error}, or None when there is none to read: layout off, or not a text page. A
+        page that failed here keeps its text: the Markdown falls back to Tesseract's blocks."""
+        model = settings.layout_model()
+        if self.run_model is None or model is None or kind != "text" or not clean_text(r, sure, kind):
+            return None
+        try:
+            return layout.read_layout(png, r, model, scan_dpi(page), self.run_model)
+        except layout.LayoutError as e:
+            log.warning("page %s: layout failed: %s", page.id, e)
+            return {"model": model, "error": str(e)}
+
+    def stage_rebuild(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
+        with store.session() as s:
+            q = select(Page).where(Page.book_id == book_id, Page.kind == "text", Page.ocr.is_not(None))
+            if pages is not None:
+                q = q.where(Page.id.in_(pages))
+            todo = [p for p in s.scalars(q.order_by(Page.position)) if (p.ocr or {}).get("lines")]
+        if not todo:
+            raise StageError("there are no read text pages to set again: read the book first")
+        # one at a time: a type fit is minutes of CPU and the heaviest job strata-models runs for this app (fourteen queued pages once ran the
+        # service out of memory, 2026-11-24)
+        errors = self._each(book_id, todo, self.rebuild_one, at_once=1)
+        if errors:
+            self._progress(book_id, error=f"{len(errors)} of {len(todo)} pages could not be set again: {errors[0]}")
+
+    def rebuild_one(self, page: Page) -> None:
+        if self.run_model is None:
+            raise StageError("strata-models is not set up")
+        png = files.page_png(page.book_id, page.id)
+        if not os.path.isfile(png):
+            render(page)
+        out = files.rebuilt_pdf(page.book_id, page.id)
+        try:
+            layout.rebuild_page(
+                png,
+                page.ocr or {},
+                out,
+                scan_dpi(page),
+                (page.text or "") if page.text_edited else None,
+                self.run_model,
+            )
+        except layout.LayoutError as e:
+            files.remove(out)
+            raise StageError(str(e)) from e
+
     def stage_export(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
         export.write_all(book_id, lambda d, t: self._progress(book_id, done=d, total=t))
+
+
+def resume_from(stage: str) -> tuple[str, ...]:
+    """The stages left to do for a book a stop left in `stage`. The rebuild is never begun by this: only finished."""
+    if stage == "rebuild":
+        return ("rebuild", "export")
+    return STAGES[STAGES.index(stage) :] if stage in STAGES else ("detect", "read")
 
 
 def _catch(work: Callable[[Any], None], item: Any) -> str | None:

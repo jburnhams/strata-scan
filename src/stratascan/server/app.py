@@ -11,10 +11,10 @@ stop left mid-stage. API (JSON unless it is a picture or a file):
     POST   /api/books {source, title?, author?, lang?}               a PDF or a folder of pictures on this machine; imports and reads it
     POST   /api/books/upload (multipart: file, title?, author?)      a PDF from the browser
     GET    /api/books/{id}   PATCH {title?, author?, lang?}   DELETE
-    POST   /api/books/{id}/run {stages, pages?}                      run stages again (detect, read, export; import starts over)
+    POST   /api/books/{id}/run {stages, pages?}                      run stages again (detect, read, export; import starts over), or rebuild
     GET    /api/books/{id}/pages                                     the pages in reading order, without their OCR
     GET    /api/books/{id}/figures                                   every picture in the book
-    GET    /api/books/{id}/files/{name}                              book.md, book.txt, book.pdf, book.zip
+    GET    /api/books/{id}/files/{name}                              book.md, book.txt, book.pdf, book-rebuilt.pdf, book.zip
     GET    /api/pages/{id}                                           a page with its scan, OCR lines and pictures
     PATCH  /api/pages/{id} {angle?, crop?, kind?, label?, text?}     a new turn or cut is hand work: the page is drawn and read again
     PUT    /api/scans/{id}/pages {pages: [{side, angle, crop}]}      the scan's pages set by hand (one page, or a spread's two)
@@ -410,6 +410,7 @@ def create_app(runner: pipeline.Runner | None = None, migrate: bool = True) -> F
                 p.label = ch.label.strip() or None
             if ch.text is not None:
                 p.text, p.text_edited = ch.text, True
+                files.remove(files.rebuilt_pdf(p.book_id, p.id))  # set from the text this one replaces
             if ch.angle is not None or ch.crop is not None:
                 if book is not None:
                     busy(book)
@@ -450,6 +451,7 @@ def create_app(runner: pipeline.Runner | None = None, migrate: bool = True) -> F
                     files.preview(o.book_id, "page", o.id),
                     files.preview(o.book_id, "thumb", o.id),
                     files.ocr_pdf(o.book_id, o.id),
+                    files.rebuilt_pdf(o.book_id, o.id),
                 )
                 s.delete(o)
             s.flush()

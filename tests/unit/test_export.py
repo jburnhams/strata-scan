@@ -66,8 +66,91 @@ def test_corrected_lines_take_the_place_of_the_ocr_lines_they_correct():
     fixed = export.corrected_lines(p)
     assert [ln["text"] for ln in fixed] == ["Punch and Judy", "a puppet show"]
     assert [ln["box"] for ln in fixed] == [ocr["lines"][0]["box"], ocr["lines"][2]["box"]]  # where Tesseract found them
-    # a correction that joined or split lines is still all there, as one block where the page's text began
-    p.text = ocr["corrected"]["text"] = "Punch and Judy, a puppet show"
-    assert [(ln["text"], ln["box"][1]) for ln in export.corrected_lines(p)] == [("Punch and Judy, a puppet show", 100)]
+    # a line with no like goes with the line before it, so no word is lost
+    p.text = ocr["corrected"]["text"] = "Punch and Judy\nby the author\na puppet show"
+    assert [(ln["text"], ln["box"][1]) for ln in export.corrected_lines(p)] == [
+        ("Punch and Judy", 100),
+        ("by the author", 100),
+        ("a puppet show", 140),
+    ]
+    # nothing like the OCR's lines: one block where the page's text began
+    p.text = ocr["corrected"]["text"] = "Wholly different\nwords here"
+    assert [(ln["text"], ln["box"][1]) for ln in export.corrected_lines(p)] == [
+        ("Wholly different", 100),
+        ("words here", 101),
+    ]
     p.text = "typed over"  # the page's text is not the correction: the export uses the OCR lines as before
     assert export.corrected_lines(p) == []
+
+
+def test_the_layout_says_what_is_a_heading_a_running_head_and_the_reading_order():
+    from stratascan.db.models import Page
+
+    ocr = {
+        "lines": [
+            line("PUPPETS 27", 100, 50, 800),
+            line("CHAPTER I", 300, 100, 300),
+            line("The puppets were made", 100, 140, 800),
+            line("of wood and cloth", 100, 170, 400),
+            line("stray", 100, 500, 100),
+        ],
+    }
+    boxes = [ln["box"] for ln in ocr["lines"]]
+    ocr["layout"] = {
+        "blocks": [
+            {"role": "running-head", "lines": [boxes[0]]},
+            {"role": "heading", "lines": [boxes[1]]},
+            {"role": "body", "lines": boxes[2:4]},
+        ]
+    }
+    text = "\n".join(ln["text"] for ln in ocr["lines"])
+    p = Page(book_id=1, scan_id=1, position=1, text=text, ocr=ocr, text_edited=False)
+    md = export.page_markdown(p, [])
+    assert "PUPPETS 27" not in md
+    assert "## CHAPTER I" in md
+    assert "The puppets were made of wood and cloth" in md
+    assert "stray" in md  # a line in no block is kept, with the line before it
+    ocr["layout"] = {"model": "m", "error": "spent"}  # no layout: by Tesseract's blocks, as before
+    assert "##" not in export.page_markdown(p, [])
+
+
+def laid_page(lines, blocks, **kw):
+    from stratascan.db.models import Page
+
+    ocr = {"lines": lines, "layout": {"blocks": blocks}, **kw}
+    text = kw["corrected"]["text"] if "corrected" in kw else "\n".join(ln["text"] for ln in lines)
+    return Page(book_id=1, scan_id=1, position=1, text=text, ocr=ocr, text_edited=False)
+
+
+def test_a_body_line_the_layout_missed_is_not_dropped_with_the_running_head():
+    lines = [
+        line("PUPPETS 27", 100, 50, 800),
+        line("the first sentence", 100, 100, 800),
+        line("the second one", 100, 140, 800),
+    ]
+    blocks = [
+        {"role": "running-head", "lines": [lines[0]["box"]]},
+        {"role": "body", "lines": [lines[2]["box"]]},
+    ]
+    md = export.page_markdown(laid_page(lines, blocks), [])
+    assert "PUPPETS" not in md
+    assert md.index("the first sentence") < md.index("the second one")
+    # nor a corrected line with no like among the OCR's lines, which borrows the running head's place
+    fixed = {"model": "m", "text": "PUPPETS 27\nan added line of print\nthe second one", "lines": [0, 2]}
+    md = export.page_markdown(laid_page(lines, blocks, corrected=fixed), [])
+    assert "an added line of print" in md
+
+
+def test_the_layouts_line_order_within_a_block_is_kept():
+    lines = [line("the ending of it.", 100, 100, 800), line("The beginning and", 100, 140, 800)]
+    blocks = [{"role": "body", "lines": [lines[1]["box"], lines[0]["box"]]}]
+    assert "The beginning and the ending of it." in export.page_markdown(laid_page(lines, blocks), [])
+
+
+def test_a_line_part_text_part_page_number_is_text():
+    lines = [line("the last words 27", 100, 100, 800)]
+    blocks = [
+        {"role": "folio", "lines": [[860, 100, 40, 30]]},
+        {"role": "body", "lines": [[100, 100, 500, 30]]},
+    ]
+    assert "the last words" in export.page_markdown(laid_page(lines, blocks), [])

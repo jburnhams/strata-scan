@@ -3,9 +3,10 @@
     books/<book>/scans/0001.png        the scans as imported (a PDF page drawn at its own resolution, or the picture copied)
     books/<book>/pages/<page>.png      a page: its scan turned and cut (geometry.apply), full resolution; OCR reads this
     books/<book>/ocr/<page>.pdf        the page with its text under it, from the ocr role; joined into the book's searchable PDF
+    books/<book>/rebuilt/<page>.pdf    a text page set again in matching type (pipeline.stage_rebuild)
     books/<book>/figures/<figure>.png  a picture cut from a page
     books/<book>/previews/...          smaller JPEGs for the web app: scan-<scan>.jpg and page-<page>.jpg (PREVIEW px), thumb-<page>.jpg
-    books/<book>/export/               book.md, book.txt, book.pdf, book.zip
+    books/<book>/export/               book.md, book.txt, book.pdf, book.zip, book-rebuilt.pdf (when pages were set again)
     uploads/                           PDFs sent from the browser before they become books
 
 Pages and figures are named by id, not position, so reordering never renames a file and a stale file is never mistaken for another page's."""
@@ -42,6 +43,10 @@ def page_png(book_id: int, page_id: int) -> str:
 
 def ocr_pdf(book_id: int, page_id: int) -> str:
     return path(book_id, "ocr", f"{page_id}.pdf")
+
+
+def rebuilt_pdf(book_id: int, page_id: int) -> str:
+    return path(book_id, "rebuilt", f"{page_id}.pdf")
 
 
 def figure_png(book_id: int, figure_id: int) -> str:

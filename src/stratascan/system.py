@@ -7,7 +7,7 @@ import platform
 import shutil
 from typing import Any
 
-import strata_models_client as sm  # pyright: ignore[reportMissingTypeStubs]
+from strata_python.clients import models as sm
 
 from stratascan import __version__, settings
 
@@ -24,13 +24,13 @@ def folder_bytes(path: str) -> int:
 
 def models() -> dict[str, Any]:
     """The strata-models service as this app sees it: its address, whether it answers, and the model behind `ocr`."""
-    url = str(sm.url())  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-    up = bool(sm.available(timeout=1.0))  # pyright: ignore[reportUnknownMemberType]
+    url = str(sm.url())
+    up = bool(sm.available(timeout=1.0))
     model: str | None = None
     if up:
         with contextlib.suppress(Exception):
-            m = sm.role_model("ocr")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            model = str(m) if m else None  # pyright: ignore[reportUnknownArgumentType]
+            m = sm.role_model("ocr")
+            model = str(m) if m else None
     return {"url": url, "available": up, "ocr_model": model}
 
 

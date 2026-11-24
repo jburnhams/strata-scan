@@ -40,7 +40,8 @@ export const fileWords: Record<FileName, { title: string; description: string }>
   'book.md': { title: 'Markdown', description: 'The text in paragraphs, running heads dropped, pictures where they stand.' },
   'book.txt': { title: 'Plain text', description: 'Every page’s text as it was read or typed, page by page.' },
   'book.pdf': { title: 'Searchable PDF', description: 'The pages as pictures with their text behind them, to search and copy.' },
-  'book.zip': { title: 'Everything', description: 'The three files and the pictures, in one zip.' },
+  'book-rebuilt.pdf': { title: 'Rebuilt PDF', description: 'The pages set again in matching type, with their pictures and rules from the scan.' },
+  'book.zip': { title: 'Everything', description: 'The files above and the pictures, in one zip.' },
 }
 
 /** A page that needs a person: the page finder was unsure and nobody has looked, or reading it failed. */
@@ -83,6 +84,7 @@ export function BookScreen() {
           <div className="flex flex-wrap gap-2">
             <RunButton book={id} stages={['detect', 'read', 'export']} busy={job.running} onStarted={started} labels={{ idle: 'Find pages again', pending: 'Starting…', done: 'Started' }} />
             <RunButton book={id} stages={['read', 'export']} busy={job.running} onStarted={started} labels={{ idle: 'Read again', pending: 'Starting…', done: 'Started' }} />
+            <RunButton book={id} stages={['rebuild', 'export']} busy={job.running || !book?.read} onStarted={started} labels={{ idle: 'Set in type', pending: 'Starting…', done: 'Started' }} />
             <RunButton book={id} stages={['export']} busy={job.running} onStarted={started} labels={{ idle: 'Make the files', pending: 'Making…', done: 'Started' }} primary />
           </div>
         }

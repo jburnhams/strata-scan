@@ -6,9 +6,9 @@ This file is for people and coding agents (`CLAUDE.md` imports it). It is the ba
 
 strata-scan turns scanned books (a PDF, or a folder of pictures) into pages and text: it finds each page in a scan (level, cropped, a spread split in two), reads it (OCR through the `ocr` role of [strata-models](https://github.com/jburnhams/strata-models)), cuts out the pictures, lets a person correct any of that, and exports Markdown, plain text, a searchable PDF and a zip. A Python backend (FastAPI + CLI) and a React frontend built on [strata-react](https://github.com/jburnhams/strata-react), made from [python-app-template](https://github.com/jburnhams/python-app-template); its prior art is [diary-study](https://github.com/jburnhams/diary-study) (a handwritten diary).
 
-- The work is four stages (`pipeline.py`): **import** (`sources.py`: PDF pages drawn at the resolution of the scan inside, pictures copied), **detect** (`geometry.py`: page outline, angle, crop, spread split; covers kept whole), **read** (OCR, then `figures.py` for pictures, kinds and running heads), **export** (`export.py`). A `Runner` thread runs them in the server; the CLI runs them in-process. Every stage keeps a person's work: a page marked `hand` is never re-detected, `text_edited` text is never replaced, hand-drawn pictures are kept.
+- The work is four stages and one only run when asked (`pipeline.py`): **import** (`sources.py`: PDF pages drawn at the resolution of the scan inside, pictures copied), **detect** (`geometry.py`: page outline, angle, crop, spread split; covers kept whole), **read** (OCR, its correction, the layout, then `figures.py` for pictures, kinds and running heads), **rebuild** (`layout.py`: text pages set again in matching type; minutes and cents a page, so only when asked), **export** (`export.py`). A `Runner` thread runs them in the server; the CLI runs them in-process. Every stage keeps a person's work: a page marked `hand` is never re-detected, `text_edited` text is never replaced, hand-drawn pictures are kept.
 - Records (books, scans, pages, pictures) are in the shared database (schema `stratascan`, `db/models.py`, `migrations/`); pictures are files in the data folder (`files.py` has the layout).
-- Models never run here: OCR is a job on strata-models (`strata_models_client`, `STRATA_MODELS_URL`). Tests use `tests/utils/models_service.py`, a stand-in service running the real `tesseract`.
+- Models never run here: OCR, correction, layout and type are jobs on strata-models (`strata_python.clients.models`, `STRATA_MODELS_URL`). Tests use `tests/utils/models_service.py`, a stand-in service running the real `tesseract`, and the `fake_models` fixture for the layout roles.
 
 ## Rules for every change
 
@@ -33,7 +33,7 @@ strata-scan turns scanned books (a PDF, or a folder of pictures) into pages and 
 
 - `uv sync` builds `.venv` from the committed `uv.lock`; `uv run <cmd>` runs inside it; `uv add <pkg>` / `uv add --group dev <pkg>` change dependencies (commit `pyproject.toml` and `uv.lock` together). Version, dependencies, the `app` entry point and every tool's configuration are in `pyproject.toml`; the version lives only there (`stratascan.__version__` reads it back). `./strata-scan` and `strata-scan.cmd` are thin wrappers for `uv run strata-scan`.
 - `scripts/check` is `uv run --locked strata-check` (from strata-python): `uv lock --check`, `ruff check`, `ruff format --check`, `pyright` and `ty`, then the unit tests with coverage. Options such as the checked paths are in `[tool.strata-check]` in `pyproject.toml`.
-- strata-python is a git dependency that tracks its `main` branch (`[tool.uv.sources]`, no tag); `uv.lock` pins the commit. `.github/workflows/upgrade-strata-python.yml` runs `uv lock --upgrade-package strata-python` weekly, runs the gate and integration tests on the result and opens a PR. Do the same by hand to pick up a library change at once.
+- strata-python comes from PyPI, capped below its next minor release (while 0.x a minor may break: read its CHANGELOG before moving the cap); Dependabot moves the lock, and `uv lock --upgrade-package strata-python` does it by hand.
 - `uv run pytest tests/unit --cov` runs the unit suite with coverage (random order via pytest-randomly; `-n auto` runs in parallel; `diff-cover` checks the lines a change touches). `uv run pytest tests/integration -n auto` runs the integration suite.
 - `uv run strata-scan doctor` checks the environment; `uv run strata-scan add <pdf or folder>` imports, reads and exports a book; `books`, `run <book> <stages…>`, `export <book>`; `uv run strata-scan serve` runs the web server on port 8368. strata-models must be running for `read` (`STRATA_MODELS_URL`, default `127.0.0.1:8366`).
 - Python coverage is calculated from the unit suite only (`fail_under` in `pyproject.toml`).
@@ -54,7 +54,7 @@ Prefer real code over mocks. A test that runs the real thing finds the bugs that
 - Tests live under `tests/`, grouped by type:
   - `tests/unit/`: fast, isolated tests of pure logic and mocked boundaries (synthetic data, fakes). No external processes or network.
   - `tests/integration/`: end-to-end tests that run the CLI (in-process and as a subprocess) and the FastAPI HTTP API over real on-disk state.
-  - `tests/utils/`: shared helpers (`fakes.py`, last-resort doubles for the outside world). The strata-python pytest plugin (configured by `strata_env_prefix` and `strata_tuning_vars` in `pyproject.toml`) makes every suite hermetic (isolated home and data dir, no network) and provides the `http_server` and `live_app` fixtures; `tests/conftest.py` holds the rest.
+  - `tests/utils/`: shared helpers (`fakes`, last-resort doubles for the outside world). The strata-python pytest plugin (configured by `strata_env_prefix` and `strata_tuning_vars` in `pyproject.toml`) makes every suite hermetic (isolated home and data dir, no network) and provides the `http_server` and `live_app` fixtures; `tests/conftest.py` holds the rest.
 - Read `tests/README.md` before writing any Python test: fixtures, conventions, file-ownership rules and the per-module coverage ledger.
 
 ## Web
@@ -64,17 +64,17 @@ Prefer real code over mocks. A test that runs the real thing finds the bugs that
 
 ## Database
 
-This app's records are in the shared database (schema `stratascan`; `STRATASCAN_DATABASE_URL` points it elsewhere, such as a SQLite file for a trial run). When an app needs one, use the shared database project, [`jburnhams/database`](https://github.com/jburnhams/database) (library `omarchy_db`), not an ad-hoc `sqlite3` file or a database of its own. Follow its [adoption guide](https://github.com/jburnhams/database/blob/main/docs/ADOPTING.md) and do not restate it here; the rules that matter to an agent:
+This app's records are in the shared database (schema `stratascan`; `STRATASCAN_DATABASE_URL` points it elsewhere, such as a SQLite file for a trial run). When an app needs one, use the shared database through strata-python's `strata_python.db`, not an ad-hoc `sqlite3` file or a database of its own. Its README (step 8) is the guide; the rules that matter to an agent:
 
 - One shared database, one schema per app. Never one database per app: Postgres cannot join across databases.
-- The app's models (typed SQLAlchemy records from `omarchy_db.make_base()`) and its Alembic migrations live in this repo; the library and `dbtool` come from the database project. Add it with a git source in `pyproject.toml` (`[tool.uv.sources]`, see the guide) so CI can resolve it, and commit `uv.lock`.
-- Models stay portable (generic SQLAlchemy types, a `server_default` on new NOT NULL columns) unless the app really needs Postgres features; then set `engine = "postgres"` in `[tool.omarchy-db]`.
-- Every model change comes with a reviewed migration (`dbtool revision -m "..."`; autogenerate sees a rename as drop + add). CI runs `dbtool check`; tests use the plugin's `db_session` fixtures, never a mocked connection. If CI needs Postgres (pgvector, say), run it as a service container.
-- Run migrations at app start (`Project.load(__file__).upgrade(engine)`) or with `dbtool migrate`.
+- The app's models (typed SQLAlchemy records on the `Base` in `db/models.py`) and its Alembic migrations live in this repo; the library and the `strata-db` command come from strata-python's `[db]` extra.
+- Models stay portable (generic SQLAlchemy types, a `server_default` on new NOT NULL columns) unless the app really needs Postgres features; then set `engine = "postgres"` in `[tool.strata-db]`.
+- Every model change comes with a reviewed migration (`strata-db revision -m "..."`; autogenerate sees a rename as drop + add). CI runs `strata-db check`; tests use the plugin's `db_session` fixtures, never a mocked connection. If CI needs Postgres (pgvector, say), run it as a service container.
+- Run migrations at app start (`Project.load(__file__).upgrade(engine)`) or with `strata-db migrate`.
 - Connection settings come from the environment (see the guide); never put a URL with credentials in the repo.
 - For data that is personal (photos, people, children) keep it out of git and behind a login.
 - A worked example in this family: [bright-horizons](https://github.com/jburnhams/bright-horizons) (`src/bright_horizons/db/`, `migrations/`).
-- If the database project lacks something an app needs, raise it as an issue there instead of working around it here.
+- If the database project lacks something an app needs, raise it as an issue on strata-python instead of working around it here.
 
 ## CI
 
