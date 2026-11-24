@@ -10,8 +10,8 @@ numbers, they were chosen knowing which of those pages looked right):
     ink      the rebuilt page's ink agrees with the scan's on the text to at least INK (F1 within a pixel or two, strata-models' `ink` measure,
              reproduced here so the gate needs no service): a page that is not print (marbled paper, a handwritten note) or is set in the wrong
              place fails it
-    symbols  every symbol of the text is drawn (a footnote's † and ‡, brackets): the period fonts lack some, and a missing one is a blank or a
-             box, which neither the words nor the ink shows
+    symbols  every symbol of the text is in the PDF and drawn (a footnote's † and ‡, brackets): the period fonts lack some, and a missing one is
+             a blank or an empty box, which neither the words nor the ink shows. The text layer may still hold it, so the drawing is looked at
 
 A check that could not be made (a PDF that will not open) is a failure with the reason, never a pass."""
 
@@ -82,8 +82,44 @@ def lost_words(text: str, drawn: str) -> float:
     return sum((want - words(drawn)).values()) / max(1, sum(want.values()))
 
 
-def read_chars(pdf: str) -> tuple[str, list[tuple[float, float, float, float]], tuple[float, float]]:
-    """(text, each visible character's box in points with y up, the page's size)."""
+SCALE = 4.0  # pixels a point the symbols are looked at: 288 dpi
+EDGE = 0.85  # share of each side of a glyph's outline that is ink on a missing-glyph box
+
+
+def is_box(ink: Mask) -> bool:
+    """Whether a glyph's ink is a frame (the box a font draws for a glyph it lacks): its four outermost rows and columns are inked through."""
+    rows, cols = np.flatnonzero(ink.any(1)), np.flatnonzero(ink.any(0))
+    if len(rows) < 6 or len(cols) < 6:
+        return False
+    g = ink[rows[0] : rows[-1] + 1, cols[0] : cols[-1] + 1]
+    return all(float(side.mean()) >= EDGE for side in (g[0], g[-1], g[:, 0], g[:, -1]))
+
+
+def undrawn(doc: Any) -> Counter[str]:
+    """The symbols the page's text layer holds but its drawing does not: nothing inked where one stands, or a missing-glyph box."""
+    page = doc[0]
+    tp = page.get_textpage()
+    gray = np.asarray(page.render(scale=SCALE, grayscale=True).to_numpy(), dtype=np.uint8)
+    drawn = np.asarray(gray.reshape(gray.shape[:2]) < 128, dtype=np.bool_)
+    out: Counter[str] = Counter()
+    for i in range(int(tp.count_chars())):
+        c = str(tp.get_text_range(i, 1))
+        if not symbols(c):
+            continue
+        left, bottom, right, top = tp.get_charbox(i)
+        high = float(page.get_size()[1])
+        x0, x1 = int(left * SCALE), int(np.ceil(right * SCALE))
+        y0, y1 = int((high - top) * SCALE), int(np.ceil((high - bottom) * SCALE))
+        glyph = drawn[max(0, y0) : max(0, y1), max(0, x0) : max(0, x1)]
+        if not glyph.any() or is_box(glyph):
+            out[c] += 1
+    return out
+
+
+def read_chars(
+    pdf: str,
+) -> tuple[str, list[tuple[float, float, float, float]], tuple[float, float], Counter[str]]:
+    """(text, each visible character's box in points with y up, the page's size, the symbols not drawn)."""
     doc = pdfium.PdfDocument(pdf)
     try:
         page = cast("Any", doc[0])
@@ -96,7 +132,7 @@ def read_chars(pdf: str) -> tuple[str, list[tuple[float, float, float, float]], 
                 if right > left and top > bottom:
                     boxes.append((left, bottom, right, top))
         size = cast("tuple[float, float]", page.get_size())
-        return text, boxes, size
+        return text, boxes, size, undrawn(doc)
     finally:
         doc.close()
 
@@ -177,14 +213,14 @@ def check_page(pdf: str, png: str, text: str, blocks: list[dict[str, Any]], dpi:
     if not words(text):
         return Verdict(0.0, 0.0, 0, 0.0, (), ("the page has no words to check it by",))
     try:
-        drawn, boxes, (wide, high) = read_chars(pdf)
+        drawn, boxes, (wide, high), blank = read_chars(pdf)
         ink = text_ink(pdf, png, blocks, dpi)
     except Exception as e:
         return Verdict(1.0, 0.0, 0, 0.0, (), (f"the rebuilt page could not be checked ({type(e).__name__}: {e})",))
     lost = lost_words(text, drawn)
     over = overlapping(boxes) / max(1, len(boxes))
     off = sum(1 for x0, y0, x1, y1 in boxes if x0 < 0 or y0 < 0 or x1 > wide or y1 > high)
-    missing = tuple(sorted((symbols(text) - symbols(drawn)).elements()))
+    missing = tuple(sorted((symbols(text) - (symbols(drawn) - blank)).elements()))
     reasons: list[str] = []
     if lost > LOST:
         reasons.append(f"{lost:.1%} of the words are missing")

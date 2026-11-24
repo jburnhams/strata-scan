@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from pdfs import DPI, blocks_of, scan_png, text_pdf
+from pdfs import DPI, blocks_of, box_pdf, scan_png, text_pdf
 
 from stratascan import gate
 
@@ -81,3 +81,17 @@ def test_pages_with_no_ink_agree_and_one_side_without_it_does_not():
     assert gate.ink_f1(a, b, 1, where) == 0.0
     assert gate.ink_f1(b, b, 1, where) == 1.0
     assert gate.overlapping([]) == 0
+
+
+@pytest.mark.parametrize("hollow", [True, False])
+def test_a_symbol_in_the_text_layer_that_is_drawn_as_a_box_or_not_at_all_is_missing(tmp_path, hollow):
+    pdf = box_pdf(tmp_path / "box.pdf", hollow=hollow)
+    text, _, _, blank = gate.read_chars(pdf)
+    assert "\u2020" in text
+    assert blank["\u2020"] == 1
+
+
+def test_a_drawn_dagger_is_not_taken_for_a_box(tmp_path):
+    text, _, _, blank = gate.read_chars(text_pdf(tmp_path / "t.pdf", LINES))
+    assert "\u2020" in text
+    assert not blank

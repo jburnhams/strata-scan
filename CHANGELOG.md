@@ -11,7 +11,8 @@ Jonathan asked for a finished PDF for each input, with a gate set on the most di
 - `pipeline.py`: the rebuild checks each page (`ocr["gate"]`, no migration) and does the worst read first. `export.py`: `book-rebuilt.pdf` is the finished PDF: pages that pass in type, every other page as its scan.
 - `server/app.py`: a page's `gate` (null until it is set). `web/`: the Book screen says which pages are set in type and which kept their scan, with the reason on hover; the file is called Finished PDF.
 - `tests/unit/test_gate.py`, `tests/utils/pdfs.py` **new** (real PDFs of real text, drawn by pdfium), `tests/unit/test_pipeline.py`, `web/tests/`. `README.md`, `AGENTS.md`, `docs/overview.md` follow.
-- The marks were set knowing which of 14 hard pages looked right (7 pass, 7 fail), so they are a starting point; the PR has the result on pages not looked at first.
+- The marks were set knowing which of 14 hard pages looked right (7 pass, 7 fail). On 10 printed pages not looked at first: 8 pass, 2 fail (an advert with a line lost, a page whose daggers are not drawn), and by eye both failures are right. Two of the 8 have one line set visibly too big, and a misread word or two passes (1 % of a 300-word page is three words): no check sees a wrong size, and a running head's words can hide a lost one. The 7 unprinted pages among the worst read could not be set at all, so they keep their scans.
+- Review: the pipeline test runs the real gate, and the symbol check looks at the drawing, not only the text layer (`tests/utils/pdfs.py` makes a font that draws a box for a dagger).
 
 **Latest strata-python and strata-react, and the best page models from strata-models' evals (branch `claude/latest-libs-page-layout`)**
 Jonathan asked for the latest shared libraries, and for the results of strata-models' page scan, layout and type evals to be used.
