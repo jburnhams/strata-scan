@@ -11,6 +11,8 @@ Jonathan asked for the latest shared libraries, and for the results of strata-mo
 - **Correction** (eval ocr-hard, ten worst pages, 2026-11-24): the text corrected is now Tesseract's reading of the adaptively cleaned page, by Claude Haiku (preset ocr-correct-v2): 0.27 % of characters wrong, against 3.7 % with qwen3.5-9b-vl, the model it replaces. Ten pages only: plain Tesseract then Haiku, 0.88 %, is not clearly worse. Its lines are matched to the kept OCR lines by likeness (`align.py`).
 - **Layout** (page-layout, 20 pages): a text page's blocks and roles are Claude Opus's (page-layout-fix-v2; blocks found 96.5 %, Tesseract's 64 %). `book.md` follows it: headings marked, running heads and page numbers dropped, reading order. Setting `layout`.
 - **Rebuild** (page-rebuild, 20 pages, candidate full-opus): stage `rebuild`, the Set in type button: each text page set again in matched type with its figures and rules, into `book-rebuilt.pdf`. Only run when asked. Ink agreement 76 % with the scan, Tesseract in Times 37 %.
+- `export.py` (review): a body line the layout missed, or a corrected line with no like among the OCR's, is never dropped with a running head; a block's lines keep the layout's order; a line part text and part page number is text (`tests/unit/test_export.py`).
+- `web/tests/visual/baselines/`: 30 rewritten by the CI workflow for strata-react 1.3.7 and the Set in type button. `AGENTS.md` follows.
 - The page-rebuild report's own pick is `full-every-face` (78 %, the fonts tried exhaustively). It is 2 points over the shortlist, under the 3 the eval asks for a change, and twice the time, so the font-match default Jonathan chose on 2026-11-23 stays.
 
 ## 2026-11-14
