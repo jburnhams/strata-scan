@@ -79,6 +79,7 @@ export const wardPages: PageSummary[] = kinds.map((kind, i) => {
     text_edited: false,
     figures: kind === 'picture' || kind === 'cover' ? 1 : 0,
     error: null,
+    gate: null,
   }
 })
 

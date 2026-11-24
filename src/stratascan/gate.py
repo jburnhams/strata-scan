@@ -1,0 +1,199 @@
+"""The quality gate on a page set again in type: whether the rebuilt page may stand in the finished PDF in place of its scan. A page that fails
+keeps its scan (with the searchable text under it), so the finished PDF is always complete and never worse than the scans.
+
+Four checks, each with its mark (Jonathan, 2026-11-24, set on 14 of the hardest pages of two books; test them on others before trusting the
+numbers, they were chosen knowing which of those pages looked right):
+
+    words    at most LOST of the corrected text's words are missing from the PDF's text. The characters of the corrected text may be right
+             while the PDF drops or misplaces lines, so the reading's own error says nothing about this
+    overlap  at most OVERLAP of the characters lie on top of another, and none off the page: a line sized far too big, or drawn over another
+    ink      the rebuilt page's ink agrees with the scan's on the text to at least INK (F1 within a pixel or two, strata-models' `ink` measure,
+             reproduced here so the gate needs no service): a page that is not print (marbled paper, a handwritten note) or is set in the wrong
+             place fails it
+    symbols  every symbol of the text is drawn (a footnote's † and ‡, brackets): the period fonts lack some, and a missing one is a blank or a
+             box, which neither the words nor the ink shows
+
+A check that could not be made (a PDF that will not open) is a failure with the reason, never a pass."""
+
+import re
+from collections import Counter
+from dataclasses import dataclass
+from typing import Any, cast
+
+import cv2
+import numpy as np
+import pypdfium2 as pdfium  # pyright: ignore[reportMissingTypeStubs]
+from numpy.typing import NDArray
+
+LOST = 0.01  # share of the corrected text's words
+OVERLAP = 0.01  # share of the characters
+INK = 0.70
+# a symbol the two texts may spell differently without being wrong: curly quotes, dashes and hyphens, and the marks dust and broken type make
+LOOSE = frozenset("'\"`_.,;:~^|<>\\/-" + "\u00b4\u2018\u2019\u201c\u201d\u2010\u2011\u2013\u2014\u00b7\u2022")
+
+Mask = NDArray[np.bool_]
+Gray = NDArray[np.uint8]
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """A page's result: the measures, and in words what failed (empty = passed)."""
+
+    words_lost: float
+    overlap: float
+    off_page: int
+    ink: float
+    symbols_lost: tuple[str, ...]
+    reasons: tuple[str, ...]
+
+    @property
+    def passed(self) -> bool:
+        return not self.reasons
+
+    def record(self) -> dict[str, Any]:
+        """As stored in the page's `ocr["gate"]`: plain JSON."""
+        return {
+            "passed": self.passed,
+            "reasons": list(self.reasons),
+            "words_lost": round(self.words_lost, 4),
+            "overlap": round(self.overlap, 4),
+            "off_page": self.off_page,
+            "ink": round(self.ink, 4),
+            "symbols_lost": list(self.symbols_lost),
+        }
+
+
+def unbroken(text: str) -> str:
+    """Words split at a line end joined: a hyphen there (pdfium gives it as U+FFFE) is the printer's, and the two texts do not split alike."""
+    return re.sub(r"[-­￾][ \t]*\r?\n[ \t]*|[­￾]", "", text.replace("\u2019", "'"))
+
+
+def words(text: str) -> Counter[str]:
+    return Counter(re.findall(r"[^\W_]+", unbroken(text).lower()))
+
+
+def symbols(text: str) -> Counter[str]:
+    return Counter(c for c in text if not c.isspace() and not c.isalnum() and c not in LOOSE and c != "￾")
+
+
+def lost_words(text: str, drawn: str) -> float:
+    """The share of `text`'s words that `drawn` lacks (each counted as often as it stands)."""
+    want = words(text)
+    return sum((want - words(drawn)).values()) / max(1, sum(want.values()))
+
+
+def read_chars(pdf: str) -> tuple[str, list[tuple[float, float, float, float]], tuple[float, float]]:
+    """(text, each visible character's box in points with y up, the page's size)."""
+    doc = pdfium.PdfDocument(pdf)
+    try:
+        page = cast("Any", doc[0])
+        tp = page.get_textpage()
+        text = str(tp.get_text_range())
+        boxes: list[tuple[float, float, float, float]] = []
+        for i in range(int(tp.count_chars())):
+            if str(tp.get_text_range(i, 1)).strip():
+                left, bottom, right, top = tp.get_charbox(i)
+                if right > left and top > bottom:
+                    boxes.append((left, bottom, right, top))
+        size = cast("tuple[float, float]", page.get_size())
+        return text, boxes, size
+    finally:
+        doc.close()
+
+
+def overlapping(boxes: list[tuple[float, float, float, float]]) -> int:
+    """How many characters lie on a later one, over 30 % of the smaller (a kerned pair touches by less). A pair counts once."""
+    if len(boxes) < 2:
+        return 0
+    a = np.asarray(boxes, dtype=np.float64)
+    area = (a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1])
+    n = 0
+    for i in range(len(a) - 1):
+        rest = a[i + 1 :]
+        w = np.minimum(a[i, 2], rest[:, 2]) - np.maximum(a[i, 0], rest[:, 0])
+        h = np.minimum(a[i, 3], rest[:, 3]) - np.maximum(a[i, 1], rest[:, 1])
+        shared = np.maximum(w, 0) * np.maximum(h, 0)
+        n += bool((shared > 0.3 * np.minimum(area[i + 1 :], area[i])).any())
+    return n
+
+
+def ink_of(gray: Gray, dpi: float) -> Mask:
+    """The black of a scanned page: the paper's tone and the gutter's shadow flattened, then Sauvola over about two lines of type, only what is
+    also darker than paper, specks (no two neighbours) out. As strata-models' evals/ink.py, so the mark means what it meant there."""
+    small = cv2.resize(gray, (max(1, gray.shape[1] // 8), max(1, gray.shape[0] // 8)), interpolation=cv2.INTER_AREA)
+    bg = cv2.medianBlur(cv2.dilate(small, np.ones((5, 5), np.uint8)), 13)
+    paper = np.asarray(cv2.resize(bg, (gray.shape[1], gray.shape[0])), dtype=np.float32)
+    flat = np.minimum(
+        gray.astype(np.float32) / np.maximum(paper, np.float32(1.0)) * np.float32(255.0), np.float32(255.0)
+    )
+    r = max(7, int(dpi / 10))
+    k = (2 * r + 1, 2 * r + 1)
+    mean = cv2.boxFilter(flat, cv2.CV_32F, k)
+    sq = cv2.boxFilter(flat * flat, cv2.CV_32F, k)
+    dev = np.sqrt(np.maximum(sq - mean * mean, 0.0))
+    ink = (flat <= mean * (1 + 0.2 * (dev / 128.0 - 1))) & (flat < 200)
+    near = np.asarray(cv2.boxFilter(ink.astype(np.float32), cv2.CV_32F, (3, 3), normalize=False), dtype=np.float32)
+    return np.asarray(ink & (near >= 3), dtype=np.bool_)  # itself and two neighbours
+
+
+def ink_f1(want: Mask, got: Mask, tol: int, where: Mask) -> float:
+    """F1 of `got`'s ink against `want`'s inside `where`, each counted when the other is within `tol` pixels. Both empty is a full agreement."""
+    want, got = want & where, got & where
+    nw, ng = int(want.sum()), int(got.sum())
+    if not nw and not ng:
+        return 1.0
+    if not nw or not ng:
+        return 0.0
+    k = np.ones((2 * tol + 1, 2 * tol + 1), np.uint8)
+    p = float((got & (cv2.dilate(want.astype(np.uint8), k) > 0)).sum()) / ng
+    r = float((want & (cv2.dilate(got.astype(np.uint8), k) > 0)).sum()) / nw
+    return 2 * p * r / (p + r) if p + r else 0.0
+
+
+def text_ink(pdf: str, png: str, blocks: list[dict[str, Any]], dpi: float) -> float:
+    """How well the rebuilt page's ink agrees with the scan's, on the text's own lines (the figures and the paper are not the rebuild's)."""
+    scan = cv2.imread(png, cv2.IMREAD_GRAYSCALE)
+    if scan is None:
+        raise ValueError("the page's picture could not be read")
+    gray = np.asarray(scan, dtype=np.uint8)
+    h, w = gray.shape
+    doc = pdfium.PdfDocument(pdf)
+    try:
+        page = cast("Any", doc[0])
+        drawn = np.asarray(page.render(scale=w / float(page.get_size()[0]), grayscale=True).to_numpy(), dtype=np.uint8)
+    finally:
+        doc.close()
+    drawn = drawn.reshape(drawn.shape[:2])
+    got = np.asarray(cv2.resize(drawn, (w, h)) < 128, dtype=np.bool_)
+    where = np.zeros((h, w), dtype=np.bool_)
+    for b in blocks:
+        for x, y, bw, bh in cast("list[list[float]]", b.get("lines") or []):
+            where[max(0, int(y - 4)) : max(0, int(y + bh + 4)), max(0, int(x - 4)) : max(0, int(x + bw + 4))] = True
+    return ink_f1(ink_of(gray, dpi), got, max(1, round(dpi / 250)), where)
+
+
+def check_page(pdf: str, png: str, text: str, blocks: list[dict[str, Any]], dpi: float) -> Verdict:
+    """The page's verdict. `text` is its corrected (or typed) text, `blocks` its layout's (layout.read_layout)."""
+    if not words(text):
+        return Verdict(0.0, 0.0, 0, 0.0, (), ("the page has no words to check it by",))
+    try:
+        drawn, boxes, (wide, high) = read_chars(pdf)
+        ink = text_ink(pdf, png, blocks, dpi)
+    except Exception as e:
+        return Verdict(1.0, 0.0, 0, 0.0, (), (f"the rebuilt page could not be checked ({type(e).__name__}: {e})",))
+    lost = lost_words(text, drawn)
+    over = overlapping(boxes) / max(1, len(boxes))
+    off = sum(1 for x0, y0, x1, y1 in boxes if x0 < 0 or y0 < 0 or x1 > wide or y1 > high)
+    missing = tuple(sorted((symbols(text) - symbols(drawn)).elements()))
+    reasons: list[str] = []
+    if lost > LOST:
+        reasons.append(f"{lost:.1%} of the words are missing")
+    if over > OVERLAP:
+        reasons.append(f"{over:.1%} of the characters lie over others")
+    if off:
+        reasons.append(f"{off} characters are off the page")
+    if ink < INK:
+        reasons.append(f"its ink agrees with the scan's only {ink:.0%}")
+    if missing:
+        reasons.append("symbols are missing: " + " ".join(missing[:8]))
+    return Verdict(lost, over, off, ink, missing, tuple(reasons))

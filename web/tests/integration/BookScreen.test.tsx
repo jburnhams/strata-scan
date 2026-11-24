@@ -16,6 +16,14 @@ describe('Book', () => {
     expect(router.state.location.pathname).toBe('/pages/114')
   })
 
+  it('says which pages are set in type and why another kept its scan', async () => {
+    mock.pages = mock.pages.map(p => (p.position === 4 ? { ...p, gate: { passed: true, reasons: [] } } : p.position === 5 ? { ...p, gate: { passed: false, reasons: ['symbols are missing: †'] } } : p))
+    openApp('/books/1')
+    const list = await screen.findByRole('list', { name: 'Pages in reading order' })
+    expect(within(list).getAllByText('Set in type')).toHaveLength(1)
+    expect(within(list).getByText('Scan kept')).toHaveAttribute('title', 'symbols are missing: †')
+  })
+
   it('shows the work running, with its progress', async () => {
     openApp('/books/2')
     const job = await screen.findByRole('region', { name: /Work on Punch and Judy/ })

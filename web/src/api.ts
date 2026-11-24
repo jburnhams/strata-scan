@@ -61,6 +61,8 @@ export interface PageSummary {
   text_edited: boolean
   figures: number
   error: string | null
+  /** The checks on the page set in type; null until it is. A failed page keeps its scan in the finished PDF. */
+  gate: { passed: boolean; reasons: string[] } | null
 }
 
 export interface Line { text: string; box: [number, number, number, number]; conf: number }

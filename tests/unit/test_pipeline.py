@@ -8,7 +8,7 @@ import pytest
 from pypdf import PdfReader
 from sqlalchemy import select
 
-from stratascan import files, layout, pipeline, store
+from stratascan import export, files, gate, layout, pipeline, store
 from stratascan.db.models import Book, Figure, Page, Scan
 
 
@@ -320,6 +320,49 @@ def test_a_text_page_is_laid_out_and_set_again(make_book, fake_models, monkeypat
     r.run(pipeline.Task(b, ("read", "export")))
     assert not any(os.path.isfile(files.rebuilt_pdf(b, p.id)) for p in texts)
     assert not os.path.isfile(files.export(b, "book-rebuilt.pdf"))
+
+
+def test_the_finished_pdf_has_the_pages_that_pass_and_the_scans_of_those_that_do_not(
+    make_book, fake_models, monkeypatch
+):
+    """Every rebuilt page is checked, worst read first; a page that fails keeps its scan. The check itself is test_gate.py's: here it says which
+    page passes."""
+    from books import tesseract_ocr
+
+    fake_models.results = models_answers(fake_models)
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
+    b = make_book()
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"]]
+    worst = min(texts, key=lambda p: p.ocr_conf)
+    seen = []
+
+    def check(pdf, png, text, blocks, dpi):
+        seen.append(os.path.basename(pdf))
+        ok = pdf != files.rebuilt_pdf(b, worst.id)
+        return gate.Verdict(0.0, 0.0, 0, 1.0, (), () if ok else ("1 line is missing",))
+
+    monkeypatch.setattr(gate, "check_page", check)
+    r.run(pipeline.Task(b, ("rebuild", "export")))
+    assert seen[0] == f"{worst.id}.pdf"
+    by_id = {p.id: p for p in pages_of(b)}
+    assert by_id[worst.id].ocr["gate"] == {
+        "passed": False,
+        "reasons": ["1 line is missing"],
+        "words_lost": 0.0,
+        "overlap": 0.0,
+        "off_page": 0,
+        "ink": 1.0,
+        "symbols_lost": [],
+    }
+    assert export.stands(b, by_id[worst.id]) is False
+    assert all(export.stands(b, by_id[p.id]) for p in texts if p.id != worst.id)
+    pages = len([p for p in by_id.values() if p.kind != "skip"])
+
+    finished = PdfReader(files.export(b, "book-rebuilt.pdf")).pages
+    assert len(finished) == pages
+    # the rebuilt pages of this stand-in are blank 100 x 100 pages: the failed one is not among them
+    assert len([p for p in finished if p.mediabox.width == 100]) == len(texts) - 1
 
 
 def test_a_layout_that_fails_leaves_the_page_read_and_says_why(make_book, fake_models):

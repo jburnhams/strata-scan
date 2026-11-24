@@ -4,8 +4,8 @@
                break is not a paragraph), words split at a line end with a hyphen joined again, running heads left out
     book.txt   each page's text as it is printed, line for line, under a page marker: for checking and for searching
     book.pdf   every page as drawn, with its text under it (the ocr role's PDF pages joined), so it can be searched and copied
-    book-rebuilt.pdf   the same book with the pages that were set again in type (pipeline.stage_rebuild) in place of their pictures; only when
-               there are any
+    book-rebuilt.pdf   the finished PDF: the same book with the pages set again in type (pipeline.stage_rebuild) that passed the checks
+               (gate.py) in place of their pictures, and every other page as its scan; only when pages were set again
     figures/   every picture as a PNG, named by page (p011-1.png)
     book.zip   all of the above
 
@@ -249,6 +249,12 @@ def add_scan_page(pdf: PdfWriter, book_id: int, p: Page, dpi: int) -> None:
         os.remove(one)
 
 
+def stands(book_id: int, p: Page) -> bool:
+    """Whether the page's type is in the finished PDF: it was set again and passed the gate (a verdict missing is not a pass)."""
+    record = cast("dict[str, Any]", (p.ocr or {}).get("gate") or {})
+    return bool(record.get("passed")) and os.path.isfile(files.rebuilt_pdf(book_id, p.id))
+
+
 def write_all(book_id: int, progress: Callable[[int, int], None] | None = None) -> dict[str, str]:
     book, pages, figs, dpi = load(book_id)
     total = len(pages) + 3
@@ -276,9 +282,8 @@ def write_all(book_id: int, progress: Callable[[int, int], None] | None = None) 
             txt.append(f"\n--- page {page_name(p)} ---\n{p.text or ''}")
         add_scan_page(pdf, book_id, p, dpi.get(p.scan_id, 300))
         if rebuilt is not None:
-            again = files.rebuilt_pdf(book_id, p.id)
-            if os.path.isfile(again):
-                for pg in PdfReader(again).pages:
+            if stands(book_id, p):
+                for pg in PdfReader(files.rebuilt_pdf(book_id, p.id)).pages:
                     rebuilt.add_page(pg)
             else:
                 add_scan_page(rebuilt, book_id, p, dpi.get(p.scan_id, 300))
