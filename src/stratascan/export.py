@@ -134,7 +134,7 @@ def corrected_lines(p: Page) -> list[dict[str, Any]]:
     last = src[k0]
     for t, k in zip(new, where, strict=True):
         last = last if k is None else src[k]
-        out.append(dict(last, text=t))
+        out.append(dict(last, text=t, guess=k is None))  # guess: a place borrowed from the line before
     return out
 
 
@@ -149,26 +149,22 @@ def layout_items(p: Page, lines: list[dict[str, Any]]) -> list[tuple[int, str]] 
     blocks = cast(list[dict[str, Any]], layout.get("blocks") or [])
     if not blocks:
         return None
-    mine: dict[int, list[dict[str, Any]]] = {}
-    cur: int | None = None
+    mine: dict[float, list[tuple[int, dict[str, Any]]]] = {}  # block -> its lines, each with its place in the block
+    cur: float = -1.0
+    place = 0
     for ln in lines:
-        x, y, w, h = (float(v) for v in ln["box"])
-        for i, b in enumerate(blocks):
-            # a layout line may be part of an OCR line (split at wide gaps): its middle lies in the OCR line's box
-            if any(
-                x <= bx + bw / 2 <= x + w and y <= by + bh / 2 <= y + h
-                for bx, by, bw, bh in cast(list[list[float]], b["lines"])
-            ):
-                cur = i
-                break
-        if cur is not None:
-            mine.setdefault(cur, []).append(dict(ln, block=cur))
-        else:
-            mine.setdefault(-1, []).append(dict(ln, block=-1))
+        found = None if ln.get("guess") else block_of(ln, blocks)
+        if found is not None:
+            cur, place = float(found[0]), found[1]
+        elif cur >= 0 and cur.is_integer() and str(blocks[int(cur)]["role"]) in DROP:
+            cur += 0.5  # text of its own after a running head: never dropped with it
+        mine.setdefault(cur, []).append((place, dict(ln, block=cur)))
     out: list[tuple[int, str]] = []
     for i in sorted(mine):
-        got = mine[i]
-        role = str(blocks[i]["role"]) if i >= 0 else "body"
+        got = [
+            ln for _, ln in sorted(mine[i], key=lambda t: t[0])
+        ]  # stable: a borrowed place stays after the line it borrowed from
+        role = str(blocks[int(i)]["role"]) if i >= 0 and i.is_integer() else "body"
         if role in DROP:
             continue
         if role == "heading":
@@ -176,6 +172,19 @@ def layout_items(p: Page, lines: list[dict[str, Any]]) -> list[tuple[int, str]] 
         else:
             out += paragraphs(got)
     return out
+
+
+def block_of(ln: dict[str, Any], blocks: list[dict[str, Any]]) -> tuple[int, int] | None:
+    """(block, place in it) of an OCR line, or None. A layout line may be part of an OCR line (split at wide gaps): its middle lies in the OCR
+    line's box. When the parts are in different blocks the line is the text's, not the furniture's, and then the widest part's."""
+    x, y, w, h = (float(v) for v in ln["box"])
+    parts = [
+        (str(b["role"]) not in DROP, bw, i, k)
+        for i, b in enumerate(blocks)
+        for k, (bx, by, bw, bh) in enumerate(cast(list[list[float]], b["lines"]))
+        if x <= bx + bw / 2 <= x + w and y <= by + bh / 2 <= y + h
+    ]
+    return max(parts, key=lambda t: t[:2])[2:] if parts else None
 
 
 def page_markdown(p: Page, figs: list[Figure]) -> str:
