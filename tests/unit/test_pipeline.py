@@ -2,13 +2,14 @@
 person gets (pages, text, pictures, kinds, labels, files) and that their hand work survives a second run."""
 
 import os
+import shutil
 import zipfile
 
 import pytest
 from pypdf import PdfReader
 from sqlalchemy import select
 
-from stratascan import files, layout, pipeline, store
+from stratascan import export, files, layout, pipeline, store
 from stratascan.db.models import Book, Figure, Page, Scan
 
 
@@ -320,6 +321,44 @@ def test_a_text_page_is_laid_out_and_set_again(make_book, fake_models, monkeypat
     r.run(pipeline.Task(b, ("read", "export")))
     assert not any(os.path.isfile(files.rebuilt_pdf(b, p.id)) for p in texts)
     assert not os.path.isfile(files.export(b, "book-rebuilt.pdf"))
+
+
+def test_the_finished_pdf_has_the_pages_that_pass_and_the_scans_of_those_that_do_not(make_book, fake_models):
+    """Every rebuilt page goes through the real gate, worst read first: one that says and shows what its scan does stands in the finished PDF (the
+    stand-in "sets" a page as Tesseract's own PDF of it, its picture over its words), and a page whose words were not drawn keeps its scan."""
+    from books import tesseract_ocr
+
+    answers = models_answers(fake_models)
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
+    b = make_book()
+    fake_models.results = answers
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"]]
+    assert len(texts) > 1
+    worst = min(texts, key=lambda p: p.ocr_conf)
+    draw, order = answers["page-build"], []
+
+    def page_build(params):
+        got = draw(params)
+        pid = int(os.path.basename(params.get("out", "0")).split(".")[0]) if params.get("font_fit") else 0
+        if pid:
+            order.append(pid)
+            if pid != worst.id:
+                shutil.copyfile(files.ocr_pdf(b, pid), params["out"])
+        return got
+
+    fake_models.results = {**answers, "page-build": page_build}
+    r.run(pipeline.Task(b, ("rebuild", "export")))
+    assert order[0] == worst.id
+    by_id = {p.id: p for p in pages_of(b)}
+    assert by_id[worst.id].ocr["gate"]["passed"] is False
+    assert "100.0% of the words are missing" in by_id[worst.id].ocr["gate"]["reasons"]
+    assert export.stands(b, by_id[worst.id]) is False
+    good = [by_id[p.id] for p in texts if p.id != worst.id]
+    assert [(p.ocr["gate"]["reasons"], export.stands(b, p)) for p in good] == [([], True)] * len(good)
+    finished = PdfReader(files.export(b, "book-rebuilt.pdf")).pages
+    assert len(finished) == len([p for p in by_id.values() if p.kind != "skip"])
+    assert all(p.mediabox.width != 100 for p in finished)  # the stand-in's blank 100-point page is not among them
 
 
 def test_a_layout_that_fails_leaves_the_page_read_and_says_why(make_book, fake_models):

@@ -136,7 +136,18 @@ def page_json(p: Page, figures: int = 0) -> dict[str, Any]:
         "text_edited": p.text_edited,
         "figures": figures,
         "error": p.error,
+        # the rebuilt page's checks (gate.py); null until it is set in type, and again after its text or reading changes (the file goes)
+        "gate": gate_json(p),
     }
+
+
+def gate_json(p: Page) -> dict[str, Any] | None:
+    r = (p.ocr or {}).get("gate")
+    return (
+        {"passed": bool(r["passed"]), "reasons": list(r["reasons"])}
+        if r and os.path.isfile(files.rebuilt_pdf(p.book_id, p.id))
+        else None
+    )
 
 
 def figure_json(f: Figure, p: Page | None = None) -> dict[str, Any]:

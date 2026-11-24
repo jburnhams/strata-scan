@@ -4,7 +4,8 @@
     detect   each scan's pages are found (geometry.find_pages), drawn (pages/<id>.png) and numbered in reading order
     read     each page is read by strata-models' `ocr` role (lines, words, a searchable PDF page), its pictures found (figures.py) and cut out,
              and its kind guessed (text, picture, blank, cover)
-    rebuild  (only when asked) each text page is set again in matching type (layout.rebuild_page)
+    rebuild  (only when asked) each text page is set again in matching type (layout.rebuild_page) and checked (gate.check_page): a page that
+             fails keeps its scan in the finished PDF
     export   the book's files are written (export.py)
 
 A stage works on the whole book or on some pages (`pages`: after a person moves a crop, only that page is drawn and read again). Hand work
@@ -30,14 +31,14 @@ from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
-from typing import Any
+from typing import Any, cast
 
 import cv2
 import numpy as np
 from sqlalchemy import delete, select, update
 from strata_python.clients import models as sm
 
-from stratascan import export, figures, files, geometry, layout, settings, sources, store
+from stratascan import export, figures, files, gate, geometry, layout, settings, sources, store
 from stratascan.db.models import Book, Figure, Page, Scan
 
 log = logging.getLogger("stratascan")
@@ -467,6 +468,8 @@ class Runner:
             if pages is not None:
                 q = q.where(Page.id.in_(pages))
             todo = [p for p in s.scalars(q.order_by(Page.position)) if (p.ocr or {}).get("lines")]
+        # the worst read first (stable, so reading order among equals): whoever looks while it runs sees the pages most likely to fail the gate
+        todo.sort(key=lambda p: p.ocr_conf if p.ocr_conf is not None else 100.0)
         if not todo:
             raise StageError("there are no read text pages to set again: read the book first")
         # one at a time: a type fit is minutes of CPU and the heaviest job strata-models runs for this app (fourteen queued pages once ran the
@@ -494,6 +497,15 @@ class Runner:
         except layout.LayoutError as e:
             files.remove(out)
             raise StageError(str(e)) from e
+        laid = cast("dict[str, Any]", (page.ocr or {}).get("layout") or {})
+        blocks = cast("list[dict[str, Any]]", laid.get("blocks") or [])
+        verdict = gate.check_page(out, png, page.text or "", blocks, scan_dpi(page))
+        with store.session() as s:
+            p = s.get(Page, page.id)
+            if p is not None and p.ocr is not None:
+                p.ocr = dict(
+                    p.ocr, gate=verdict.record()
+                )  # a new dict: SQLAlchemy does not see a JSON column change in place
 
     def stage_export(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
         export.write_all(book_id, lambda d, t: self._progress(book_id, done=d, total=t))
