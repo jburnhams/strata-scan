@@ -35,7 +35,7 @@ def test_ocr_through_the_client(http_server, monkeypatch, tmp_path):
         "role": "ocr",
         "params": {"path": "/p.png", "pdf": "/p.pdf", "lang": "eng", "dpi": 360},
         "app": "strata-scan",
-        "priority": "batch",
+        "priority": "normal",
         "model": None,
         "options": None,
     }

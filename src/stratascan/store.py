@@ -1,14 +1,14 @@
-"""The database connection: the app's schema `stratascan` in the shared Postgres (omarchy-db), or what OMARCHY_DB_URL /
+"""The database connection: the app's schema `stratascan` in the shared Postgres (strata_python.db), or what STRATA_DB_URL /
 STRATASCAN_DATABASE_URL name (a SQLite path for a machine without the shared server). Only the long-running server migrates (`migrate`, at
-start), never a CLI command, so a stray process cannot move the schema under the running service (omarchy-db's rule)."""
+start), never a CLI command, so a stray process cannot move the schema under the running service (strata_python.db's rule)."""
 
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 
-from omarchy_db import Project, connect  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
+from strata_python.db import Project, connect
 
 _lock = threading.Lock()
 _engine: Engine | None = None
@@ -24,7 +24,7 @@ def engine() -> Engine:
 
 def migrate() -> None:
     """Bring the schema to the code's head (a no-op when it is there): the server calls this once at start."""
-    Project.load(__file__).upgrade(engine())  # pyright: ignore[reportUnknownMemberType]
+    Project.load(__file__).upgrade(engine())
 
 
 def reset() -> None:

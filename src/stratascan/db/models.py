@@ -1,4 +1,4 @@
-"""Books, their scans, the pages cut from them and the pictures found on the pages: typed records for omarchy-db (one schema, `stratascan`, in
+"""Books, their scans, the pages cut from them and the pictures found on the pages: typed records for strata_python.db (one schema, `stratascan`, in
 the shared Postgres; SQLite in tests). Images are files in the data folder (see `files.py`); the rows hold what was decided about them.
 
 A scan is one picture as it came (a PDF page, a photo). A page is what a person reads: a scan turned by `angle` and cut to `crop`, so one scan
@@ -10,11 +10,13 @@ from datetime import datetime
 from typing import Any
 
 import sqlalchemy as sa
-from omarchy_db import make_base  # pyright: ignore[reportMissingTypeStubs]
-from sqlalchemy import ForeignKey, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import ForeignKey, MetaData, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
+from strata_python.db import NAMING_CONVENTION
 
-Base = make_base()
+
+class Base(MappedAsDataclass, DeclarativeBase):
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
 class Book(Base):

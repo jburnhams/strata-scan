@@ -1,7 +1,7 @@
 """User settings: one JSON file, `~/.stratascan/settings.json` (the folder can be moved with the STRATASCAN_HOME environment variable).
 
   data_dir   where the books' pictures live (scans, pages, figures, exports). Default: `data/` in this repository (gitignored) until
-             configured. Must be an absolute path. The records are in the shared database (omarchy-db, schema `stratascan`), not here.
+             configured. Must be an absolute path. The records are in the shared database (strata_python.db, schema `stratascan`), not here.
   max_dpi    the highest resolution a PDF page is drawn at on import (default 600). A page is drawn at the resolution of the scan inside it
              (Internet Archive books are 360-500 dpi), so this only limits a very large one.
   workers    pages worked on at once (default 4: strata-models runs four CPU jobs beside each other, so a fifth would only queue there).
@@ -13,25 +13,10 @@ The environment variables STRATASCAN_DATA, STRATASCAN_MAX_DPI, STRATASCAN_WORKER
 validation are [strata_python.settings](https://github.com/jburnhams/strata-python); this module only declares the app's settings."""
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
-from strata_python.settings import Setting, Settings, absolute_path
-
-
-def whole_number(lo: int, hi: int) -> Callable[[str], str]:
-    """A normaliser for a whole number from lo to hi (settings are stored as text)."""
-
-    def norm(v: str) -> str:
-        try:
-            n = int(str(v).strip())
-        except ValueError as e:
-            raise ValueError(f"must be a whole number from {lo} to {hi}") from e
-        if not lo <= n <= hi:
-            raise ValueError(f"must be from {lo} to {hi}")
-        return str(n)
-
-    return norm
+from strata_python.settings import Setting, Settings, absolute_path, whole_between
 
 
 def model_or_off(v: str) -> str:
@@ -49,8 +34,8 @@ SETTINGS = Settings(
     "stratascan",
     [
         Setting("data_dir", default=DEFAULT_DATA_DIR, normalise=absolute_path, env="STRATASCAN_DATA"),
-        Setting("max_dpi", default="600", normalise=whole_number(72, 1200)),
-        Setting("workers", default="4", normalise=whole_number(1, 32)),
+        Setting("max_dpi", default="600", normalise=whole_between(72, 1200)),
+        Setting("workers", default="4", normalise=whole_between(1, 32)),
         Setting("correct", default="qwen3.5-9b-vl", normalise=model_or_off),
     ],
 )

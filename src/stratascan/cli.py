@@ -100,8 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "cv2",
             "pypdfium2",
             "pypdf",
-            "omarchy_db",
-            "strata_models_client",
+            "strata_python.db",
         ),
     )
     a = sub.add_parser(

@@ -31,8 +31,8 @@ from typing import Any
 
 import cv2
 import numpy as np
-import strata_models_client as sm  # pyright: ignore[reportMissingTypeStubs]
 from sqlalchemy import delete, select, update
+from strata_python.clients import models as sm
 
 from stratascan import export, figures, files, geometry, settings, sources, store
 from stratascan.db.models import Book, Figure, Page, Scan
@@ -47,10 +47,10 @@ OcrFn = Callable[[str, str, str, int], dict[str, Any]]
 
 def models_ocr(path: str, pdf: str, lang: str, dpi: int) -> dict[str, Any]:
     try:
-        return dict(sm.run("ocr", {"path": path, "pdf": pdf, "lang": lang, "dpi": dpi}, app=APP))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-    except sm.Unavailable as e:  # pyright: ignore[reportUnknownMemberType]
+        return dict(sm.run("ocr", {"path": path, "pdf": pdf, "lang": lang, "dpi": dpi}, app=APP))
+    except sm.Unavailable as e:
         raise StageError(f"strata-models is not running ({e}); start it, then read the pages again") from e
-    except sm.JobFailed as e:  # pyright: ignore[reportUnknownMemberType]
+    except sm.JobFailed as e:
         raise StageError(f"strata-models could not read the page: {e}") from e
 
 
@@ -61,12 +61,12 @@ CorrectFn = Callable[[str, str, str], str]
 def models_correct(path: str, text: str, model: str) -> str:
     params = {"image": path, "prompt": text, "system_preset": "ocr-correct-v1", "max_tokens": 4096, "temperature": 0.0}
     try:
-        r = sm.run("vision-language", params, app=APP, model=model)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-    except sm.Unavailable as e:  # pyright: ignore[reportUnknownMemberType]
+        r = sm.run("vision-language", params, app=APP, model=model)
+    except sm.Unavailable as e:
         raise StageError(f"strata-models is not running ({e})") from e
-    except sm.JobFailed as e:  # pyright: ignore[reportUnknownMemberType]
+    except sm.JobFailed as e:
         raise StageError(f"strata-models could not correct the page: {e}") from e
-    return str(r.get("text") or "") if isinstance(r, dict) else ""  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    return str(r.get("text") or "")
 
 
 def plausible(before: str, after: str) -> bool:
