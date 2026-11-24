@@ -4,6 +4,8 @@
                break is not a paragraph), words split at a line end with a hyphen joined again, running heads left out
     book.txt   each page's text as it is printed, line for line, under a page marker: for checking and for searching
     book.pdf   every page as drawn, with its text under it (the ocr role's PDF pages joined), so it can be searched and copied
+    book-rebuilt.pdf   the same book with the pages that were set again in type (pipeline.stage_rebuild) in place of their pictures; only when
+               there are any
     figures/   every picture as a PNG, named by page (p011-1.png)
     book.zip   all of the above
 
@@ -23,13 +25,14 @@ from pypdf import PdfReader, PdfWriter
 from sqlalchemy import select
 
 from stratascan import files, store
+from stratascan.align import align
 from stratascan.db.models import Book, Figure, Page, Scan
 
 JPEG_QUALITY = 75
 PDF_SIDE = (
     2400  # book.pdf's pages: about 300 dpi for a pocket book, 250-400 kB a page; the full scans stay in the data folder
 )
-NAMES = ("book.md", "book.txt", "book.pdf", "book.zip")
+NAMES = ("book.md", "book.txt", "book.pdf", "book-rebuilt.pdf", "book.zip")
 NUMBER = re.compile(r"^\W*(\d{1,4})\W*$|^\W*(\d{1,4})\b|\b(\d{1,4})\W*$")
 
 
@@ -110,9 +113,10 @@ def paragraphs(ocr_lines: list[dict[str, Any]]) -> list[tuple[int, str]]:
 
 
 def corrected_lines(p: Page) -> list[dict[str, Any]]:
-    """A corrected page's lines with their OCR boxes (pipeline.correct_page): each corrected line in place of the OCR line it corrects,
-    when the correction kept the line count (it is asked to). Otherwise its text as one block at the top of the page, so no word is lost;
-    [] when the page's text is not the correction."""
+    """A corrected page's lines with their OCR boxes (pipeline.correct_page): each corrected line in place of the OCR line it is (align.py: the
+    correction came from a second reading of the page, whose lines need not be one for one with these). A line with no like among the OCR's
+    goes with the line before it, so no word is lost; when none has one, the text is one block at the top of the page. [] when the page's
+    text is not the correction."""
     ocr: dict[str, Any] = p.ocr or {}
     fixed = cast(dict[str, Any], ocr.get("corrected") or {})
     text = fixed.get("text")
@@ -121,10 +125,57 @@ def corrected_lines(p: Page) -> list[dict[str, Any]]:
     all_lines = cast(list[dict[str, Any]], ocr.get("lines", []))
     src = [all_lines[i] for i in cast(list[int], fixed.get("lines") or []) if i < len(all_lines)]
     new = [ln for ln in str(text).splitlines() if ln.strip()]
-    if src and len(src) == len(new):
-        return [dict(ln, text=t) for ln, t in zip(src, new, strict=True)]
-    top = min((int(ln["box"][1]) for ln in src), default=0)
-    return [{"text": t, "box": [0, top + k, 0, 1], "block": -1} for k, t in enumerate(new)]
+    where = align(new, [str(ln["text"]) for ln in src])
+    if all(k is None for k in where):
+        top = min((int(ln["box"][1]) for ln in src), default=0)
+        return [{"text": t, "box": [0, top + k, 0, 1], "block": -1} for k, t in enumerate(new)]
+    out: list[dict[str, Any]] = []
+    k0 = next(k for k in where if k is not None)
+    last = src[k0]
+    for t, k in zip(new, where, strict=True):
+        last = last if k is None else src[k]
+        out.append(dict(last, text=t))
+    return out
+
+
+DROP = ("running-head", "folio")  # a page's furniture: not the book's text
+
+
+def layout_items(p: Page, lines: list[dict[str, Any]]) -> list[tuple[int, str]] | None:
+    """(top y, Markdown) of a page in the order its layout reads (pipeline.layout_page): headings marked, running heads and page numbers left
+    out, each block's lines joined into paragraphs. A line the layout put in no block goes with the line before it, so no word is lost. None
+    when the page has no layout (or its reading failed): the caller goes by Tesseract's blocks."""
+    layout = cast(dict[str, Any], (p.ocr or {}).get("layout") or {})
+    blocks = cast(list[dict[str, Any]], layout.get("blocks") or [])
+    if not blocks:
+        return None
+    mine: dict[int, list[dict[str, Any]]] = {}
+    cur: int | None = None
+    for ln in lines:
+        x, y, w, h = (float(v) for v in ln["box"])
+        for i, b in enumerate(blocks):
+            # a layout line may be part of an OCR line (split at wide gaps): its middle lies in the OCR line's box
+            if any(
+                x <= bx + bw / 2 <= x + w and y <= by + bh / 2 <= y + h
+                for bx, by, bw, bh in cast(list[list[float]], b["lines"])
+            ):
+                cur = i
+                break
+        if cur is not None:
+            mine.setdefault(cur, []).append(dict(ln, block=cur))
+        else:
+            mine.setdefault(-1, []).append(dict(ln, block=-1))
+    out: list[tuple[int, str]] = []
+    for i in sorted(mine):
+        got = mine[i]
+        role = str(blocks[i]["role"]) if i >= 0 else "body"
+        if role in DROP:
+            continue
+        if role == "heading":
+            out.append((int(got[0]["box"][1]), "## " + join_lines([str(ln["text"]) for ln in got])))
+        else:
+            out += paragraphs(got)
+    return out
 
 
 def page_markdown(p: Page, figs: list[Figure]) -> str:
@@ -136,12 +187,15 @@ def page_markdown(p: Page, figs: list[Figure]) -> str:
         items = [(-1, b) for b in body if b]
     else:
         lines = corrected_lines(p) or [ln for ln in p.ocr.get("lines", []) if ln["text"] in set(text_lines)]
-        if lines and is_running_head(str(lines[0]["text"]), len(lines)):
+        laid = layout_items(p, lines)
+        if laid is None and lines and is_running_head(str(lines[0]["text"]), len(lines)):
             lines = lines[1:]
-        items = paragraphs(lines)
-    for k, f in enumerate(figs, 1):
-        items.append((f.y, f"![{f.caption or 'Picture on page ' + page_name(p)}]({figure_file(p, k)})"))
-    items.sort(key=lambda it: it[0])
+        items = paragraphs(lines) if laid is None else laid
+    for k, f in enumerate(
+        figs, 1
+    ):  # each picture before the first text below its top, whatever order the text is read in
+        at = next((i for i, (y, _) in enumerate(items) if y > f.y), len(items))
+        items.insert(at, (f.y, f"![{f.caption or 'Picture on page ' + page_name(p)}]({figure_file(p, k)})"))
     return f"<!-- page {page_name(p)} -->\n\n" + "\n\n".join(t for _, t in items)
 
 
@@ -163,6 +217,28 @@ def load(book_id: int) -> tuple[Book, list[Page], dict[int, list[Figure]], dict[
     return book, pages, figs, dpi
 
 
+def add_scan_page(pdf: PdfWriter, book_id: int, p: Page, dpi: int) -> None:
+    """The page as drawn, with its text under it."""
+    ocr = files.ocr_pdf(book_id, p.id)
+    png = files.page_png(book_id, p.id)
+    if os.path.isfile(ocr) and os.path.getsize(ocr) > 0:
+        for pg in PdfReader(ocr).pages:
+            added = pdf.add_page(pg)
+            # Tesseract embeds the page losslessly (3-5 MB a page): a smaller JPEG is a tenth of that
+            for im in added.images:
+                picture = cast("Image.Image | None", im.image)  # pyright: ignore[reportUnknownMemberType]  (pypdf types PIL loosely)
+                im.replace(smaller(picture), quality=JPEG_QUALITY)  # pyright: ignore[reportUnknownMemberType]
+    elif os.path.isfile(png):
+        one = files.path(book_id, "export", ".page.pdf")
+        with Image.open(png) as im:
+            small = smaller(im)
+            # a page never read is the picture alone, at its paper size: the scan's resolution, scaled with the picture
+            small.save(one, "PDF", resolution=dpi * small.width / im.width, quality=JPEG_QUALITY)
+        for pg in PdfReader(one).pages:
+            pdf.add_page(pg)
+        os.remove(one)
+
+
 def write_all(book_id: int, progress: Callable[[int, int], None] | None = None) -> dict[str, str]:
     book, pages, figs, dpi = load(book_id)
     total = len(pages) + 3
@@ -177,6 +253,8 @@ def write_all(book_id: int, progress: Callable[[int, int], None] | None = None) 
     head = f"# {book.title}\n\n" + (f"{book.author}\n\n" if book.author else "")
     md, txt = [head], [f"{book.title}\n"]
     pdf = PdfWriter()
+    any_rebuilt = any(os.path.isfile(files.rebuilt_pdf(book_id, p.id)) for p in pages)
+    rebuilt = PdfWriter() if any_rebuilt else None
     for i, p in enumerate(pages, 1):
         pf = figs.get(p.id, [])
         for k, f in enumerate(pf, 1):
@@ -186,26 +264,14 @@ def write_all(book_id: int, progress: Callable[[int, int], None] | None = None) 
         if p.kind != "blank":
             md.append(page_markdown(p, pf))
             txt.append(f"\n--- page {page_name(p)} ---\n{p.text or ''}")
-        ocr = files.ocr_pdf(book_id, p.id)
-        png = files.page_png(book_id, p.id)
-        if os.path.isfile(ocr) and os.path.getsize(ocr) > 0:
-            for pg in PdfReader(ocr).pages:
-                added = pdf.add_page(pg)
-                # Tesseract embeds the page losslessly (3-5 MB a page): a smaller JPEG is a tenth of that
-                for im in added.images:
-                    picture = cast("Image.Image | None", im.image)  # pyright: ignore[reportUnknownMemberType]  (pypdf types PIL loosely)
-                    im.replace(smaller(picture), quality=JPEG_QUALITY)  # pyright: ignore[reportUnknownMemberType]
-        elif os.path.isfile(png):
-            one = files.path(book_id, "export", ".page.pdf")
-            with Image.open(png) as im:
-                small = smaller(im)
-                # a page never read is the picture alone, at its paper size: the scan's resolution, scaled with the picture
-                small.save(
-                    one, "PDF", resolution=dpi.get(p.scan_id, 300) * small.width / im.width, quality=JPEG_QUALITY
-                )
-            for pg in PdfReader(one).pages:
-                pdf.add_page(pg)
-            os.remove(one)
+        add_scan_page(pdf, book_id, p, dpi.get(p.scan_id, 300))
+        if rebuilt is not None:
+            again = files.rebuilt_pdf(book_id, p.id)
+            if os.path.isfile(again):
+                for pg in PdfReader(again).pages:
+                    rebuilt.add_page(pg)
+            else:
+                add_scan_page(rebuilt, book_id, p, dpi.get(p.scan_id, 300))
         tick(i, total)
     paths = {n: files.export(book_id, n) for n in NAMES}
     with open(paths["book.md"], "w", encoding="utf8") as f:
@@ -213,13 +279,18 @@ def write_all(book_id: int, progress: Callable[[int, int], None] | None = None) 
     tick(len(pages) + 1, total)
     with open(paths["book.txt"], "w", encoding="utf8") as f:
         f.write("\n".join(txt).rstrip() + "\n")
-    pdf.add_metadata({"/Title": book.title, **({"/Author": book.author} if book.author else {})})
-    with open(paths["book.pdf"], "wb") as f:
-        pdf.write(f)
+    for name, writer in (("book.pdf", pdf), ("book-rebuilt.pdf", rebuilt)):
+        if writer is None:  # an old one was of an earlier reading
+            files.remove(paths[name])
+            continue
+        writer.add_metadata({"/Title": book.title, **({"/Author": book.author} if book.author else {})})
+        with open(paths[name], "wb") as f:
+            writer.write(f)
     tick(len(pages) + 2, total)
     with zipfile.ZipFile(paths["book.zip"], "w", zipfile.ZIP_DEFLATED) as z:
-        for n in ("book.md", "book.txt", "book.pdf"):
-            z.write(paths[n], n)
+        for n in NAMES[:-1]:
+            if os.path.isfile(paths[n]):
+                z.write(paths[n], n)
         for name in sorted(os.listdir(os.path.join(out_dir, "figures"))):
             z.write(os.path.join(out_dir, "figures", name), f"figures/{name}")
     tick(total, total)

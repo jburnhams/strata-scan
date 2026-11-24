@@ -5,11 +5,15 @@
   max_dpi    the highest resolution a PDF page is drawn at on import (default 600). A page is drawn at the resolution of the scan inside it
              (Internet Archive books are 360-500 dpi), so this only limits a very large one.
   workers    pages worked on at once (default 4: strata-models runs four CPU jobs beside each other, so a fifth would only queue there).
-  correct    the vision-language model that corrects each text page's OCR against the page (default `qwen3.5-9b-vl`), or `off`. On
-             strata-models' ocr-pages eval (10 hard pages of two 19th-century books) Tesseract alone got 5.1 % of characters wrong and
-             Tesseract then this correction 0.3 %, at about 18 s of GPU time a page; the lines and their boxes stay Tesseract's.
+  correct    the vision-language model that corrects each text page's OCR against the page (default `claude-haiku-5-5-api`), or `off`. On
+             strata-models' ocr-hard eval (the 10 worst pages of two 19th-century books) the cleaned page read by Tesseract then this
+             correction got 0.27 % of characters wrong (plain Tesseract then Haiku 0.88 %, then the local qwen3.5-9b-vl 3.7 %, Tesseract alone
+             23 %), for about $0.0007 a page; the lines and their boxes stay Tesseract's. Ten pages, so the order of the first two is
+             not certain.
+  layout     the vision-language model that reads each text page's layout (default `claude-opus-5-5-api`), or `off`: page-layout's winner,
+             blocks found 96.5 % against Tesseract's 64 %, about 3 cents a page. The Markdown and the rebuilt pages follow it.
 
-The environment variables STRATASCAN_DATA, STRATASCAN_MAX_DPI, STRATASCAN_WORKERS and STRATASCAN_CORRECT override the file. The file handling, precedence and
+The environment variables STRATASCAN_DATA, STRATASCAN_MAX_DPI, STRATASCAN_WORKERS, STRATASCAN_CORRECT and STRATASCAN_LAYOUT override the file. The file handling, precedence and
 validation are [strata_python.settings](https://github.com/jburnhams/strata-python); this module only declares the app's settings."""
 
 import os
@@ -36,7 +40,8 @@ SETTINGS = Settings(
         Setting("data_dir", default=DEFAULT_DATA_DIR, normalise=absolute_path, env="STRATASCAN_DATA"),
         Setting("max_dpi", default="600", normalise=whole_between(72, 1200)),
         Setting("workers", default="4", normalise=whole_between(1, 32)),
-        Setting("correct", default="qwen3.5-9b-vl", normalise=model_or_off),
+        Setting("correct", default="claude-haiku-5-5-api", normalise=model_or_off),
+        Setting("layout", default="claude-opus-5-5-api", normalise=model_or_off),
     ],
 )
 KNOWN = SETTINGS.keys
@@ -71,6 +76,12 @@ def workers() -> int:
 def correct_model() -> str | None:
     """The model that corrects OCR text, or None when correction is off."""
     v = str(SETTINGS.get("correct"))
+    return None if v == "off" else v
+
+
+def layout_model() -> str | None:
+    """The model that reads a page's layout, or None when that is off."""
+    v = str(SETTINGS.get("layout"))
     return None if v == "off" else v
 
 

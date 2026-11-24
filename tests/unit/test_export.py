@@ -66,8 +66,49 @@ def test_corrected_lines_take_the_place_of_the_ocr_lines_they_correct():
     fixed = export.corrected_lines(p)
     assert [ln["text"] for ln in fixed] == ["Punch and Judy", "a puppet show"]
     assert [ln["box"] for ln in fixed] == [ocr["lines"][0]["box"], ocr["lines"][2]["box"]]  # where Tesseract found them
-    # a correction that joined or split lines is still all there, as one block where the page's text began
-    p.text = ocr["corrected"]["text"] = "Punch and Judy, a puppet show"
-    assert [(ln["text"], ln["box"][1]) for ln in export.corrected_lines(p)] == [("Punch and Judy, a puppet show", 100)]
+    # a line with no like goes with the line before it, so no word is lost
+    p.text = ocr["corrected"]["text"] = "Punch and Judy\nby the author\na puppet show"
+    assert [(ln["text"], ln["box"][1]) for ln in export.corrected_lines(p)] == [
+        ("Punch and Judy", 100),
+        ("by the author", 100),
+        ("a puppet show", 140),
+    ]
+    # nothing like the OCR's lines: one block where the page's text began
+    p.text = ocr["corrected"]["text"] = "Wholly different\nwords here"
+    assert [(ln["text"], ln["box"][1]) for ln in export.corrected_lines(p)] == [
+        ("Wholly different", 100),
+        ("words here", 101),
+    ]
     p.text = "typed over"  # the page's text is not the correction: the export uses the OCR lines as before
     assert export.corrected_lines(p) == []
+
+
+def test_the_layout_says_what_is_a_heading_a_running_head_and_the_reading_order():
+    from stratascan.db.models import Page
+
+    ocr = {
+        "lines": [
+            line("PUPPETS 27", 100, 50, 800),
+            line("CHAPTER I", 300, 100, 300),
+            line("The puppets were made", 100, 140, 800),
+            line("of wood and cloth", 100, 170, 400),
+            line("stray", 100, 500, 100),
+        ],
+    }
+    boxes = [ln["box"] for ln in ocr["lines"]]
+    ocr["layout"] = {
+        "blocks": [
+            {"role": "running-head", "lines": [boxes[0]]},
+            {"role": "heading", "lines": [boxes[1]]},
+            {"role": "body", "lines": boxes[2:4]},
+        ]
+    }
+    text = "\n".join(ln["text"] for ln in ocr["lines"])
+    p = Page(book_id=1, scan_id=1, position=1, text=text, ocr=ocr, text_edited=False)
+    md = export.page_markdown(p, [])
+    assert "PUPPETS 27" not in md
+    assert "## CHAPTER I" in md
+    assert "The puppets were made of wood and cloth" in md
+    assert "stray" in md  # a line in no block is kept, with the line before it
+    ocr["layout"] = {"model": "m", "error": "spent"}  # no layout: by Tesseract's blocks, as before
+    assert "##" not in export.page_markdown(p, [])

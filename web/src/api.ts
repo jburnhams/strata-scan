@@ -8,7 +8,7 @@ import { fetchJson } from 'strata-react'
 export interface Settings { data_dir: string; max_dpi: string; workers: string }
 
 /** The stage a book is in: `idle` when nothing runs. */
-export type Stage = 'idle' | 'import' | 'detect' | 'read' | 'export'
+export type Stage = 'idle' | 'import' | 'detect' | 'read' | 'rebuild' | 'export'
 
 /** `GET /api/books` and `GET /api/books/{id}` (which adds `files`: name → modified, seconds since the epoch). */
 export interface Book {
@@ -32,8 +32,8 @@ export interface Book {
   files?: Partial<Record<FileName, number>>
 }
 
-export type FileName = 'book.md' | 'book.txt' | 'book.pdf' | 'book.zip'
-export const fileNames: readonly FileName[] = ['book.md', 'book.txt', 'book.pdf', 'book.zip']
+export type FileName = 'book.md' | 'book.txt' | 'book.pdf' | 'book-rebuilt.pdf' | 'book.zip'
+export const fileNames: readonly FileName[] = ['book.md', 'book.txt', 'book.pdf', 'book-rebuilt.pdf', 'book.zip']
 
 export interface Crop { x: number; y: number; w: number; h: number }
 export type Side = 'single' | 'left' | 'right'
@@ -155,13 +155,13 @@ export const api = {
 }
 
 /** The book's stage in a word, for its status: "Reading", or "Ready" when nothing runs. */
-export const stageWord: Record<Stage, string> = { idle: 'Ready', import: 'Importing', detect: 'Finding pages', read: 'Reading', export: 'Exporting' }
+export const stageWord: Record<Stage, string> = { idle: 'Ready', import: 'Importing', detect: 'Finding pages', read: 'Reading', rebuild: 'Setting in type', export: 'Exporting' }
 
 /** Where a book is, as a sentence: "Reading page 12 of 206." or the error, or what it holds. */
 export function describeBook(b: Book): string {
   if (b.error) return `Stopped: ${b.error}.`
   if (b.stage !== 'idle') {
-    const what = { import: 'Importing scan', detect: 'Finding pages in scan', read: 'Reading page', export: 'Writing the files, step' }[b.stage]
+    const what = { import: 'Importing scan', detect: 'Finding pages in scan', read: 'Reading page', rebuild: 'Setting in type page', export: 'Writing the files, step' }[b.stage]
     return b.total ? `${what} ${b.done} of ${b.total}.` : `${stageWord[b.stage]}…`
   }
   if (!b.pages) return 'No pages yet.'

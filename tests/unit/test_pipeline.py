@@ -2,12 +2,13 @@
 person gets (pages, text, pictures, kinds, labels, files) and that their hand work survives a second run."""
 
 import os
+import zipfile
 
 import pytest
 from pypdf import PdfReader
 from sqlalchemy import select
 
-from stratascan import files, pipeline, store
+from stratascan import files, layout, pipeline, store
 from stratascan.db.models import Book, Figure, Page, Scan
 
 
@@ -101,7 +102,7 @@ def test_failures_are_said_in_words(make_book, tmp_path):
     def down(path, pdf, lang, dpi):
         raise pipeline.StageError("strata-models is not running")
 
-    r = pipeline.Runner(ocr=down, correct=None)
+    r = pipeline.Runner(ocr=down, correct=None, run_model=None)
     b = make_book()
     r.run(pipeline.Task(b, ("read",)))
     assert book(b).error == "the book has no pages: find them first"
@@ -192,18 +193,18 @@ def test_text_pages_are_corrected_and_both_texts_kept(make_book, monkeypatch):
         sent.append((path, text, model))
         return text.upper()
 
-    r = pipeline.Runner(ocr=tesseract_ocr, correct=upper)
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=upper, reread=None, run_model=None)
     b = make_book()
     r.run(pipeline.Task(b, ("import", "detect", "read")))
     texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["corrected"]]
     assert texts
     assert sent
-    assert all(m == "qwen3.5-9b-vl" for _, _, m in sent)
+    assert all(m == "claude-haiku-5-5-api" for _, _, m in sent)
     assert len(sent) == len(texts)  # no cover, picture or blank page was sent
     for p in texts:
         assert p.text == p.ocr["corrected"]["text"]
         assert p.text == p.text.upper()
-        assert p.ocr["corrected"]["model"] == "qwen3.5-9b-vl"
+        assert p.ocr["corrected"]["model"] == "claude-haiku-5-5-api"
     r.run(
         pipeline.Task(b, ("export",))
     )  # the corrected lines are what the Markdown says, not dropped for not matching the OCR's
@@ -226,19 +227,23 @@ def test_a_failed_or_implausible_correction_keeps_the_ocr_text(make_book, monkey
         raise pipeline.StageError("strata-models could not correct the page: out of memory")
 
     b = make_book()
-    pipeline.Runner(ocr=tesseract_ocr, correct=down).run(pipeline.Task(b, ("import", "detect", "read")))
+    pipeline.Runner(ocr=tesseract_ocr, correct=down, reread=None, run_model=None).run(
+        pipeline.Task(b, ("import", "detect", "read"))
+    )
     texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr.get("corrected")]
     assert texts
     assert all("out of memory" in p.ocr["corrected"]["error"] for p in texts)
     assert all(p.text and p.error is None for p in texts)  # Tesseract's text, and no page error
-    pipeline.Runner(ocr=tesseract_ocr, correct=lambda path, text, model: "A page of a book.").run(
-        pipeline.Task(b, ("read",))
-    )
+    pipeline.Runner(
+        ocr=tesseract_ocr, correct=lambda path, text, model: "A page of a book.", reread=None, run_model=None
+    ).run(pipeline.Task(b, ("read",)))
     after = [p for p in pages_of(b) if p.id in {t.id for t in texts}]
     assert all("kept the OCR text" in p.ocr["corrected"]["error"] and p.text != "A page of a book." for p in after)
     monkeypatch.setenv("STRATASCAN_CORRECT", "off")
     called = []
-    pipeline.Runner(ocr=tesseract_ocr, correct=lambda *a: called.append(a) or "").run(pipeline.Task(b, ("read",)))
+    pipeline.Runner(ocr=tesseract_ocr, correct=lambda *a: called.append(a) or "", reread=None, run_model=None).run(
+        pipeline.Task(b, ("read",))
+    )
     assert called == []
     assert all(p.ocr["corrected"] is None for p in pages_of(b) if p.ocr)
 
@@ -249,3 +254,128 @@ def test_plausible_corrections_stay_near_the_texts_length():
     assert not pipeline.plausible(text, "")
     assert not pipeline.plausible(text, "Punch")
     assert not pipeline.plausible(text, text + " This page shows the title of a book about puppets and their history.")
+
+
+# ---- the second reading, the layout and the rebuilt pages ----------------------------------------------------------------------------------
+
+
+def test_the_correction_is_of_the_cleaned_pages_text_unless_cleaning_lost_the_page(make_book):
+    from books import tesseract_ocr
+
+    sent = []
+
+    def keep(path, text, model):
+        sent.append(text)
+        return text
+
+    clean = lambda path, lang, dpi: {  # noqa: E731
+        "lines": [{"text": "The cleaned page read again", "conf": 95, "words": [{"conf": 95}] * 5}] * 12
+    }
+    b = make_book()
+    pipeline.Runner(ocr=tesseract_ocr, correct=keep, reread=clean, run_model=None).run(
+        pipeline.Task(b, ("import", "detect", "read"))
+    )
+    assert sent
+    assert all(t.startswith("The cleaned page read again") for t in sent)
+    sent.clear()
+    lost = lambda path, lang, dpi: {"lines": [{"text": "few words", "conf": 95, "words": [{"conf": 95}] * 2}]}  # noqa: E731
+    pipeline.Runner(ocr=tesseract_ocr, correct=keep, reread=lost, run_model=None).run(pipeline.Task(b, ("read",)))
+    assert sent
+    assert not any(t.startswith("few words") for t in sent)  # Tesseract's first reading instead
+
+    def down(path, lang, dpi):
+        raise pipeline.StageError("strata-models could not read the cleaned page: gone")
+
+    pipeline.Runner(ocr=tesseract_ocr, correct=keep, reread=down, run_model=None).run(pipeline.Task(b, ("read",)))
+    assert any("gone" in p.ocr["corrected"]["error"] for p in pages_of(b) if p.ocr and p.ocr.get("corrected"))
+
+
+def test_a_text_page_is_laid_out_and_set_again(make_book, fake_models, monkeypatch):
+    """layout -> groups -> rebuild, through the real client: the roles, models and presets the evals measured, in order; the export has both
+    PDFs, and re-reading a page removes what was set from the old reading."""
+    from books import tesseract_ocr
+
+    fake_models.results = models_answers(fake_models)
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
+    b = make_book()
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"]]
+    assert texts
+    assert all(p.ocr["layout"]["model"] == "claude-opus-5-5-api" and p.ocr["layout"]["blocks"] for p in texts)
+    asked = [j for j in fake_models.jobs if j["role"] == "vision-language"]
+    assert {(j["model"], j["params"]["preset"]) for j in asked} == {("claude-opus-5-5-api", "page-layout-fix-v2")}
+    fake_models.jobs.clear()
+    r.run(pipeline.Task(b, ("rebuild", "export")))
+    draws = [j for j in fake_models.jobs if j["role"] == "page-build" and j["params"].get("texts") is not None]
+    assert len(draws) == len(texts)
+    assert all(j["model"] == "pagebuild" and j["params"]["font_fit"] and j["params"]["snap"] == 0.1 for j in draws)
+    assert all(
+        j["params"]["styles"] == ["roman", "italic"] and j["params"]["crop"] and j["params"]["rules"] for j in draws
+    )
+    assert {j["params"]["preset"] for j in fake_models.jobs if j["role"] == "vision-language"} == {"page-text-fix-v1"}
+    assert all(os.path.isfile(files.rebuilt_pdf(b, p.id)) for p in texts)
+    assert os.path.isfile(files.export(b, "book-rebuilt.pdf"))
+    with zipfile.ZipFile(files.export(b, "book.zip")) as z:
+        assert "book-rebuilt.pdf" in z.namelist()
+    r.run(pipeline.Task(b, ("read", "export")))
+    assert not any(os.path.isfile(files.rebuilt_pdf(b, p.id)) for p in texts)
+    assert not os.path.isfile(files.export(b, "book-rebuilt.pdf"))
+
+
+def test_a_layout_that_fails_leaves_the_page_read_and_says_why(make_book, fake_models):
+    from books import tesseract_ocr
+
+    fake_models.results = models_answers(fake_models)
+    fake_models.results["vision-language"] = {"text": "no", "model": "m"}
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
+    b = make_book()
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"]]
+    assert texts
+    assert all("not JSON" in p.ocr["layout"]["error"] and p.text for p in texts)
+    r.run(pipeline.Task(b, ("rebuild",)))
+    with store.session() as s:
+        assert "could not be set again: the model's answer was not JSON" in s.get(Book, b).error
+    pipeline.Runner(ocr=tesseract_ocr, correct=None, run_model=None).run(pipeline.Task(b, ("rebuild",)))
+    with store.session() as s:
+        assert "strata-models is not set up" in s.get(Book, b).error
+
+
+def test_a_rebuild_needs_read_pages_and_a_stop_in_it_is_finished_not_restarted(make_book, runner):
+    b = make_book()
+    runner.run(pipeline.Task(b, ("import", "detect")))
+    with pytest.raises(pipeline.StageError, match="read the book first"):
+        runner.stage_rebuild(b)
+    assert pipeline.resume_from("rebuild") == ("rebuild", "export")
+    assert pipeline.resume_from("read") == ("read", "export")
+    assert pipeline.resume_from("???") == ("detect", "read")
+
+
+def models_answers(service):
+    """strata-models' answers for the layout roles, from what each job is sent (the real page-build draws; this writes a small PDF)."""
+
+    def page_build(params):
+        ocr = params["ocr"]
+        if params.get("list_lines"):
+            rows = [f"{n} b1 [0,0,9,9] {ln['text']}" for n, ln in enumerate(ocr["lines"], 1)]
+            return {"text": "\n".join(rows)}
+        out = params["out"]
+        with open(out, "wb") as f:
+            from pypdf import PdfWriter
+
+            w = PdfWriter()
+            w.add_blank_page(100, 100)
+            w.write(f)
+        blocks = [{"role": "body", "lines": [{"box": ln["box"]} for ln in ocr["lines"]]}]
+        return {"pdf": out, "page": {"width": 10, "height": 10, "blocks": blocks}}
+
+    def ask(params):
+        if params["preset"] == "page-text-fix-v1":
+            return {"json": {"lines": []}, "text": "{}"}
+        return {"json": {"blocks": [{"lines": [1], "role": "body"}], "figures": []}, "text": "{}"}
+
+    return {
+        "page-build": page_build,
+        "vision-language": ask,
+        "font-match": {"face": "tinos", "blocks": [], "fonts": {}},
+    }

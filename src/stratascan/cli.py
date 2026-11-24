@@ -117,7 +117,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     b.set_defaults(fn=cmd_books)
     r = sub.add_parser("run", help="run stages of a book again")
     r.add_argument("book", type=int)
-    r.add_argument("stages", nargs="+", choices=pipeline.STAGES)
+    r.add_argument("stages", nargs="+", choices=pipeline.ALL_STAGES)
     r.add_argument("--pages", type=int, nargs="+", help="only these page ids")
     r.set_defaults(fn=cmd_run)
     e = sub.add_parser("export", help="write a book's files (book.md, book.txt, book.pdf, book.zip)")

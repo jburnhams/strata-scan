@@ -27,7 +27,7 @@ def runner():
 
     from stratascan import pipeline
 
-    return pipeline.Runner(ocr=tesseract_ocr, correct=None)
+    return pipeline.Runner(ocr=tesseract_ocr, correct=None, run_model=None)
 
 
 @pytest.fixture
