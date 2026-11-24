@@ -54,7 +54,7 @@ Prefer real code over mocks. A test that runs the real thing finds the bugs that
 - Tests live under `tests/`, grouped by type:
   - `tests/unit/`: fast, isolated tests of pure logic and mocked boundaries (synthetic data, fakes). No external processes or network.
   - `tests/integration/`: end-to-end tests that run the CLI (in-process and as a subprocess) and the FastAPI HTTP API over real on-disk state.
-  - `tests/utils/`: shared helpers (`fakes.py`, last-resort doubles for the outside world). The strata-python pytest plugin (configured by `strata_env_prefix` and `strata_tuning_vars` in `pyproject.toml`) makes every suite hermetic (isolated home and data dir, no network) and provides the `http_server` and `live_app` fixtures; `tests/conftest.py` holds the rest.
+  - `tests/utils/`: shared helpers (`fakes`, last-resort doubles for the outside world). The strata-python pytest plugin (configured by `strata_env_prefix` and `strata_tuning_vars` in `pyproject.toml`) makes every suite hermetic (isolated home and data dir, no network) and provides the `http_server` and `live_app` fixtures; `tests/conftest.py` holds the rest.
 - Read `tests/README.md` before writing any Python test: fixtures, conventions, file-ownership rules and the per-module coverage ledger.
 
 ## Web
@@ -64,17 +64,17 @@ Prefer real code over mocks. A test that runs the real thing finds the bugs that
 
 ## Database
 
-This app's records are in the shared database (schema `stratascan`; `STRATASCAN_DATABASE_URL` points it elsewhere, such as a SQLite file for a trial run). When an app needs one, use the shared database project, [`jburnhams/database`](https://github.com/jburnhams/database) (library `omarchy_db`), not an ad-hoc `sqlite3` file or a database of its own. Follow its [adoption guide](https://github.com/jburnhams/database/blob/main/docs/ADOPTING.md) and do not restate it here; the rules that matter to an agent:
+This app's records are in the shared database (schema `stratascan`; `STRATASCAN_DATABASE_URL` points it elsewhere, such as a SQLite file for a trial run). When an app needs one, use the shared database through strata-python's `strata_python.db`, not an ad-hoc `sqlite3` file or a database of its own. Its README (step 8) is the guide; the rules that matter to an agent:
 
 - One shared database, one schema per app. Never one database per app: Postgres cannot join across databases.
-- The app's models (typed SQLAlchemy records from `omarchy_db.make_base()`) and its Alembic migrations live in this repo; the library and `dbtool` come from the database project. Add it with a git source in `pyproject.toml` (`[tool.uv.sources]`, see the guide) so CI can resolve it, and commit `uv.lock`.
-- Models stay portable (generic SQLAlchemy types, a `server_default` on new NOT NULL columns) unless the app really needs Postgres features; then set `engine = "postgres"` in `[tool.omarchy-db]`.
-- Every model change comes with a reviewed migration (`dbtool revision -m "..."`; autogenerate sees a rename as drop + add). CI runs `dbtool check`; tests use the plugin's `db_session` fixtures, never a mocked connection. If CI needs Postgres (pgvector, say), run it as a service container.
-- Run migrations at app start (`Project.load(__file__).upgrade(engine)`) or with `dbtool migrate`.
+- The app's models (typed SQLAlchemy records on the `Base` in `db/models.py`) and its Alembic migrations live in this repo; the library and the `strata-db` command come from strata-python's `[db]` extra.
+- Models stay portable (generic SQLAlchemy types, a `server_default` on new NOT NULL columns) unless the app really needs Postgres features; then set `engine = "postgres"` in `[tool.strata-db]`.
+- Every model change comes with a reviewed migration (`strata-db revision -m "..."`; autogenerate sees a rename as drop + add). CI runs `strata-db check`; tests use the plugin's `db_session` fixtures, never a mocked connection. If CI needs Postgres (pgvector, say), run it as a service container.
+- Run migrations at app start (`Project.load(__file__).upgrade(engine)`) or with `strata-db migrate`.
 - Connection settings come from the environment (see the guide); never put a URL with credentials in the repo.
 - For data that is personal (photos, people, children) keep it out of git and behind a login.
 - A worked example in this family: [bright-horizons](https://github.com/jburnhams/bright-horizons) (`src/bright_horizons/db/`, `migrations/`).
-- If the database project lacks something an app needs, raise it as an issue there instead of working around it here.
+- If the database project lacks something an app needs, raise it as an issue on strata-python instead of working around it here.
 
 ## CI
 

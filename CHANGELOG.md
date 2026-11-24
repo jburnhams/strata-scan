@@ -2,6 +2,17 @@
 
 Newest first, grouped by day. One entry per change, in the same commit or PR as the change.
 
+## 2026-11-24
+
+**Latest strata-python and strata-react, and the best page models from strata-models' evals (branch `claude/latest-libs-page-layout`)**
+Jonathan asked for the latest shared libraries, and for the results of strata-models' page scan, layout and type evals to be used.
+
+- strata-python 0.1 (git) to 0.2.13 (PyPI, `[db]`), strata-react 1.0.39 to 1.3.7. `strata_python.db` replaces the git-pinned `omarchy_db` (`[tool.strata-db]`, `STRATA_DB_LIVE`, `STRATA_DB_DATABASE`; the migrations are unchanged) and `strata_python.clients.models` replaces `strata_models_client`. Tests use the plugin's fixtures (`tests/utils/fakes.py` goes), `tests/unit/test_database.py` runs the standard database tests, and Dependabot replaces the upgrade workflow. A service must set `STRATA_DB_LIVE=1` and `STRATA_DB_DATABASE`.
+- **Correction** (eval ocr-hard, ten worst pages, 2026-11-24): the text corrected is now Tesseract's reading of the adaptively cleaned page, by Claude Haiku (preset ocr-correct-v2): 0.27 % of characters wrong, against 3.7 % with qwen3.5-9b-vl, the model it replaces. Ten pages only: plain Tesseract then Haiku, 0.88 %, is not clearly worse. Its lines are matched to the kept OCR lines by likeness (`align.py`).
+- **Layout** (page-layout, 20 pages): a text page's blocks and roles are Claude Opus's (page-layout-fix-v2; blocks found 96.5 %, Tesseract's 64 %). `book.md` follows it: headings marked, running heads and page numbers dropped, reading order. Setting `layout`.
+- **Rebuild** (page-rebuild, 20 pages, candidate full-opus): stage `rebuild`, the Set in type button: each text page set again in matched type with its figures and rules, into `book-rebuilt.pdf`. Only run when asked. Ink agreement 76 % with the scan, Tesseract in Times 37 %.
+- The page-rebuild report's own pick is `full-every-face` (78 %, the fonts tried exhaustively). It is 2 points over the shortlist, under the 3 the eval asks for a change, and twice the time, so the font-match default Jonathan chose on 2026-11-23 stays.
+
 ## 2026-11-14
 
 **Correct every text page's OCR with a vision-language model (branch `claude/project-thread-0n1ijc`)**
