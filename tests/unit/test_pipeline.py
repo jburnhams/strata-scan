@@ -477,3 +477,19 @@ def models_answers(service):
         "vision-language": ask,
         "font-match": {"face": "tinos", "blocks": [], "fonts": {}},
     }
+
+
+def test_a_reading_held_between_the_passes_keeps_no_image():
+    # the read stage holds every page's Reading until the bulk answers come: a decoded scan in each would be gigabytes for a long book
+    import dataclasses
+
+    assert {f.name for f in dataclasses.fields(pipeline.Reading)} == {
+        "png",
+        "r",
+        "boxes",
+        "confs",
+        "sure",
+        "kind",
+        "prompt",
+        "prompt_error",
+    }

@@ -117,11 +117,11 @@ class StageError(RuntimeError):
 @dataclass(frozen=True)
 class Reading:
     """A page as the read stage's first pass leaves it: its OCR, what was found in it, and the text to correct (`prompt`, None when there
-    is none to correct; `prompt_error` when the cleaned reading failed)."""
+    is none to correct; `prompt_error` when the cleaned reading failed). Not the decoded image: the stage holds every page's reading
+    until the bulk answers come, and a few hundred full-size scans would not fit in memory, so the second pass reads it again."""
 
     png: str
     r: dict[str, Any]
-    img: geometry.Image
     boxes: list[tuple[int, int, int, int]]
     confs: list[float]
     sure: int
@@ -467,7 +467,7 @@ class Runner:
         errors = self._each(book_id, todo, first)
         read = [p for p in todo if p.id in readings]
         with self.queued_ahead(self.read_calls(read, readings)):
-            errors += self._each(book_id, read, lambda p: self.finish_read(p, readings[p.id]))
+            errors += self._each(book_id, read, lambda p: self.finish_read(p, readings.pop(p.id)))
         if errors:
             self._progress(book_id, error=f"{len(errors)} of {len(todo)} pages could not be read: {errors[0]}")
 
@@ -501,10 +501,10 @@ class Runner:
             area = sum(w * h for _, _, w, h in boxes) / float(img.shape[0] * img.shape[1])
             kind = "picture" if area > 0.3 and sure < 25 else "blank" if not boxes and sure < 3 else "text"
         prompt, why = self.correction_prompt(page, png, r, sure, kind, lang)
-        return Reading(png, r, img, boxes, confs, sure, kind, prompt, why)
+        return Reading(png, r, boxes, confs, sure, kind, prompt, why)
 
     def finish_read(self, page: Page, rd: Reading) -> None:
-        png, img, boxes, confs, sure, kind = rd.png, rd.img, rd.boxes, rd.confs, rd.sure, rd.kind
+        png, boxes, confs, sure, kind = rd.png, rd.boxes, rd.confs, rd.sure, rd.kind
         r = dict(rd.r, corrected=self.correct_page(rd), layout=self.layout_page(page, png, rd.r, sure, kind))
         files.remove(files.rebuilt_pdf(page.book_id, page.id))  # set from the reading this one replaces
         with store.session() as s:
@@ -532,8 +532,10 @@ class Runner:
                     s.add(Figure(page_id=p.id, x=x, y=y, w=w, h=h))
             s.flush()
             cut = [(f.id, f.x, f.y, f.w, f.h) for f in s.scalars(select(Figure).where(Figure.page_id == p.id))]
-        for fid, x, y, w, h in cut:
-            cv2.imwrite(files.figure_png(page.book_id, fid), img[y : y + h, x : x + w])
+        if cut:  # the image is read again here, not kept from the first pass (see Reading)
+            img = read_image(png)
+            for fid, x, y, w, h in cut:
+                cv2.imwrite(files.figure_png(page.book_id, fid), img[y : y + h, x : x + w])
 
     def correction_prompt(
         self, page: Page, png: str, r: dict[str, Any], sure: int, kind: str, lang: str

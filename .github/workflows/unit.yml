@@ -35,8 +35,19 @@ jobs:
           case "$RUNNER_OS" in
             Linux) sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr ;;
             macOS) brew install tesseract ;;
-            Windows) choco install tesseract -y --no-progress && echo "C:\Program Files\Tesseract-OCR" >> "$GITHUB_PATH" ;;
+            # The Chocolatey feed has refused the package (2026-11-25: "installed 0/0 packages", exit 0), so fall back to UB Mannheim's
+            # installer (the build Tesseract's own docs point Windows users to), and check the command runs either way.
+            Windows)
+              choco install tesseract -y --no-progress || true
+              if [ ! -x "/c/Program Files/Tesseract-OCR/tesseract.exe" ]; then
+                curl -fsSL --retry 4 -o "$RUNNER_TEMP/tesseract-setup.exe" https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.5.0.20241111.exe
+                "$RUNNER_TEMP/tesseract-setup.exe" //S
+              fi
+              echo "C:\Program Files\Tesseract-OCR" >> "$GITHUB_PATH" ;;
           esac
+      - name: Tesseract is installed
+        shell: bash
+        run: tesseract --version | head -1
       - run: uv sync --locked
       - name: Lockfile, lint, format and types (once, on the newest Python)
         if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
