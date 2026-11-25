@@ -8,13 +8,13 @@ from difflib import SequenceMatcher
 LIKE = 0.45  # two lines at least this alike may be the same line (a badly read one still shares half its letters)
 
 
-def _letters(s: str) -> str:
+def letters(s: str) -> str:
     return "".join(c for c in s.lower() if c.isalnum())
 
 
 def likeness(a: str, b: str) -> float:
     """0 to 1: how much of two lines' letters and digits agree, in order (spaces, case and punctuation are what OCR gets wrong)."""
-    x, y = _letters(a), _letters(b)
+    x, y = letters(a), letters(b)
     if not x or not y:
         return 0.0
     m = SequenceMatcher(None, x, y, autojunk=False)

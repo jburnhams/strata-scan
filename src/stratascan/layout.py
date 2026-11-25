@@ -16,11 +16,12 @@ import os
 import re
 import tempfile
 from collections.abc import Callable, Mapping
+from difflib import SequenceMatcher
 from typing import Any, cast
 
 from strata_python.clients import models as sm
 
-from stratascan.align import align
+from stratascan.align import align, letters
 
 APP = "strata-scan"
 LAYOUT_PRESET = "page-layout-fix-v2"
@@ -117,7 +118,7 @@ def rebuild_page(
 ) -> None:
     """The page set again as a PDF with real text at `out`, from its stored layout (`ocr["layout"]["groups"]`). `typed` is a person's text:
     it goes in as it stands, so a page whose typed lines are not the printed ones cannot be set line for line. `corrected` is the page's
-    corrected text, whose lines go in where they are the printed ones (`with_corrected`)."""
+    corrected text, whose words put misread ones right (`with_corrected`)."""
     layout = cast("dict[str, Any]", ocr.get("layout") or {})
     groups = layout.get("groups")
     if not groups:
@@ -158,16 +159,38 @@ def read_again(png: str, run: RunFn = models_run) -> str:
 
 
 def with_corrected(texts: Mapping[str, Any], corrected: str, context: str) -> dict[str, Any]:
-    """page-text-fix's answer with the page's corrected text in place of it on every line that is one of the text's. The correction reads a
-    cleaned page (ocr-hard, 2026-11-24) and gets small capitals right that the line fix leaves misread ("PorrLy" for POLLY on the 1874 book);
-    the lines the text leaves out (a running head, a page number) keep the line fix."""
+    """page-text-fix's answer with its misread words put right from the page's corrected text. The correction reads a cleaned page (ocr-hard,
+    2026-11-24) and gets small capitals right that the line fix leaves misread ("PorrLy" for POLLY on the 1874 book). Only word for word, a word by the
+    like word that stands for it (align.py), so the lines and their breaks stay the print's (a correction may join a paragraph's lines,
+    which set on one of them ran off the page), and words the correction lacks (a running head) stay as they are."""
     nums = [(int(m[1]), m[2]) for m in (NUMBERED.match(x) for x in context.splitlines()) if m]
     fixed = {int(x["n"]): str(x["text"]) for x in cast("list[dict[str, Any]]", texts.get("lines") or [])}
-    lines = [x for x in corrected.splitlines() if x.strip()]
-    for line, k in zip(lines, align(lines, [t for _, t in nums]), strict=True):
-        if k is not None:
-            fixed[nums[k][0]] = line
+    lines = {n: fixed.get(n, t).split() for n, t in nums}
+    where = [(n, k) for n, ws in lines.items() for k in range(len(ws))]
+    old = [lines[n][k] for n, k in where]
+    new = corrected.split()
+    m = SequenceMatcher(None, [letters(w) for w in old], [letters(w) for w in new], autojunk=False)
+    changed: set[int] = set()
+    for op, i1, i2, j1, j2 in m.get_opcodes():
+        if op != "replace":
+            continue
+        for b, k in enumerate(align(new[j1:j2], old[i1:i2])):  # alike words only, in order
+            if k is None or not same_word(old[i1 + k], new[j1 + b]):
+                continue
+            n, at = where[i1 + k]
+            split = old[i1 + k].endswith("-") or (i1 + k > 0 and old[i1 + k - 1].endswith("-"))
+            if not split:  # half of a word the print broke at a line end: the correction has it whole
+                lines[n][at] = new[j1 + b]
+                changed.add(n)
+    for n in changed:
+        fixed[n] = " ".join(lines[n])
     return {**texts, "lines": [{"n": n, "text": t} for n, t in sorted(fixed.items())]}
+
+
+def same_word(old: str, new: str) -> bool:
+    """Whether `new` may stand for `old`: they differ, and neither holds much more than the other (two words the OCR ran together, half a word)."""
+    a, b = letters(old), letters(new)
+    return bool(a and b) and a != b and 0.75 * len(a) <= len(b) <= 1.4 * len(a)
 
 
 def typed_texts(typed: str, context: str) -> dict[str, Any]:
