@@ -2,6 +2,16 @@
 
 Newest first, grouped by day. One entry per change, in the same commit or PR as the change.
 
+## 2026-11-25
+
+**Pages set in type draw the corrected text, and the gate sees wrong sizes and misreads (branch `rebuild-text-size`)**
+The first finished PDF of a whole book (44 pages, 17 of its 25 set pages passed) had pages the gate should not have passed: lines set too big, a headline's word set tiny, and names misread ("Juvpy", "PorrLy", "ccffin") though the page's stored text was right.
+
+- `layout.py`: a page's corrected text goes in on every line that is one of its lines (`with_corrected`); the lines it leaves out (running heads, page numbers) keep the line fix. `read_again`: the page read by Haiku from the picture alone.
+- `pipeline.py`: the gate checks the words against that second reading when it is plausible, and against the page's text otherwise (`ocr["gate"]["by"]`). Checking a rebuild against the reading it drew from hid misreads, and lines that reading never found.
+- `gate.py`: **size**: no line over 1.25 times its block's size, and no words on one baseline over 1.8 times apart. Set on 25 pages of the 1874 book and 10 of the 1828 book: it flags every size fault seen by eye, and no other page.
+- `tests/unit/`: the above.
+
 ## 2026-11-24
 
 **A quality gate on pages set in type, and a finished PDF that keeps the scan of those that fail (branch `quality-gate`)**

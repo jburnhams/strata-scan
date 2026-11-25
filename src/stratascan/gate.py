@@ -13,6 +13,12 @@ numbers, they were chosen knowing which of those pages looked right):
     symbols  every symbol of the text is in the PDF and drawn (a footnote's † and ‡, brackets): the period fonts lack some, and a missing one is
              a blank or an empty box, which neither the words nor the ink shows. The text layer may still hold it, so the drawing is looked at
 
+    size     no line of a block of text is set more than SIZE times its block's size, and no words that stand on one line differ more than ROW
+             in size: a line whose size was fitted wrong (a tall neighbour's descender boxed with it), or a headline's word set small
+
+The words are checked against a second reading of the page by another route (a vision-language model on the picture, pipeline), not the reading
+the rebuild drew from: a line that reading never found, or a misread it made, is otherwise compared with itself.
+
 A check that could not be made (a PDF that will not open) is a failure with the reason, never a pass."""
 
 import re
@@ -23,11 +29,14 @@ from typing import Any, cast
 import cv2
 import numpy as np
 import pypdfium2 as pdfium  # pyright: ignore[reportMissingTypeStubs]
+import pypdfium2.raw as pdfium_c  # pyright: ignore[reportMissingTypeStubs]
 from numpy.typing import NDArray
 
 LOST = 0.01  # share of the corrected text's words
 OVERLAP = 0.01  # share of the characters
 INK = 0.70
+SIZE = 1.25  # set on book 1's 25 rebuilt pages (2026-11-25): flags the four with a line too big by eye and page 7, and no other
+ROW = 1.8  # a line's words of three letters or more; small capitals beside capitals differ by about 1.3
 # a symbol the two texts may spell differently without being wrong: curly quotes, dashes and hyphens, and the marks dust and broken type make
 LOOSE = frozenset("'\"`_.,;:~^|<>\\/-" + "\u00b4\u2018\u2019\u201c\u201d\u2010\u2011\u2013\u2014\u00b7\u2022")
 
@@ -137,6 +146,85 @@ def read_chars(
         doc.close()
 
 
+def char_sizes(pdf: str, width: float) -> list[tuple[float, float, float, str]]:
+    """Every letter and digit of the page as (x, y, its type size, itself), x and y in the scan's pixels (`width` across), top down."""
+    doc = cast("Any", pdfium.PdfDocument(pdf))
+    c_api = cast("Any", pdfium_c)
+    try:
+        page = doc[0]
+        wide, high = page.get_size()
+        k = width / float(wide)
+        tp = page.get_textpage()
+        out: list[tuple[float, float, float, str]] = []
+        for i in range(int(tp.count_chars())):
+            c = str(tp.get_text_range(i, 1))
+            if not c.isalnum():
+                continue
+            left, bottom, right, top = tp.get_charbox(i)
+            m = c_api.FS_MATRIX()
+            c_api.FPDFText_GetMatrix(tp, i, m)
+            size = abs(float(c_api.FPDFText_GetFontSize(tp, i)) * float(m.d))
+            if size > 0:
+                out.append(((left + right) / 2 * k, (high - (top + bottom) / 2) * k, size, c))
+        return out
+    finally:
+        doc.close()
+
+
+def wrong_sizes(pdf: str, blocks: list[dict[str, Any]], width: float) -> list[str]:
+    """The lines set too big or too small for their place, in words: `SIZE` and `ROW` (module docstring)."""
+    chars = char_sizes(pdf, width)
+    out: list[str] = []
+    for b in blocks:
+        if str(b.get("role")) not in ("body", "footnote"):
+            continue
+        sizes: list[tuple[float, str]] = []
+        for x, y, w, h in cast("list[list[float]]", b.get("lines") or []):
+            mine = [c for c in chars if x - 8 <= c[0] <= x + w + 8 and y - 0.1 * h <= c[1] <= y + 1.1 * h]
+            if len(mine) >= 3:
+                sizes.append((float(np.median([c[2] for c in mine])), "".join(c[3] for c in mine)[:20]))
+        if len(sizes) >= 3:
+            usual = float(np.median([s for s, _ in sizes]))
+            out += [f"{t!r} at {s / usual:.1f} times its block" for s, t in sizes if s / usual > SIZE]
+    return out
+
+
+def mixed_rows(pdf: str) -> list[str]:
+    """Words of three letters or more that stand on one baseline in sizes over `ROW` apart (a headline whose one word was set small)."""
+    doc = cast("Any", pdfium.PdfDocument(pdf))
+    c_api = cast("Any", pdfium_c)
+    try:
+        tp = doc[0].get_textpage()
+        words_at: list[tuple[float, float, float, float, str]] = []  # left, right, baseline, size, text
+        cur: list[tuple[float, float, float, float, str]] = []
+
+        def end() -> None:
+            t = "".join(c[4] for c in cur)
+            if len(t) >= 3:
+                words_at.append((cur[0][0], cur[-1][1], min(c[2] for c in cur), cur[0][3], t))
+            cur.clear()
+
+        for i in range(int(tp.count_chars())):
+            c = str(tp.get_text_range(i, 1))
+            if not c.isalnum():
+                end()
+                continue
+            left, bottom, right, _ = tp.get_charbox(i)
+            m = c_api.FS_MATRIX()
+            c_api.FPDFText_GetMatrix(tp, i, m)
+            cur.append((left, right, bottom, abs(float(c_api.FPDFText_GetFontSize(tp, i)) * float(m.d)), c))
+        end()
+    finally:
+        doc.close()
+    out: list[str] = []
+    for i, a in enumerate(words_at):
+        for b in words_at[i + 1 :]:
+            small, big = sorted((a[3], b[3]))
+            if abs(a[2] - b[2]) < 0.25 * small and big / small > ROW and (b[0] >= a[1] or a[0] >= b[1]):
+                out.append(f"{a[4]!r} beside {b[4]!r}")
+    return out
+
+
 def overlapping(boxes: list[tuple[float, float, float, float]]) -> int:
     """How many characters lie on a later one, over 30 % of the smaller (a kerned pair touches by less). A pair counts once."""
     if len(boxes) < 2:
@@ -186,6 +274,13 @@ def ink_f1(want: Mask, got: Mask, tol: int, where: Mask) -> float:
     return 2 * p * r / (p + r) if p + r else 0.0
 
 
+def scan_width(png: str) -> float:
+    scan = cv2.imread(png, cv2.IMREAD_GRAYSCALE)
+    if scan is None:
+        raise ValueError("the page's picture could not be read")
+    return float(scan.shape[1])
+
+
 def text_ink(pdf: str, png: str, blocks: list[dict[str, Any]], dpi: float) -> float:
     """How well the rebuilt page's ink agrees with the scan's, on the text's own lines (the figures and the paper are not the rebuild's)."""
     scan = cv2.imread(png, cv2.IMREAD_GRAYSCALE)
@@ -215,6 +310,7 @@ def check_page(pdf: str, png: str, text: str, blocks: list[dict[str, Any]], dpi:
     try:
         drawn, boxes, (wide, high), blank = read_chars(pdf)
         ink = text_ink(pdf, png, blocks, dpi)
+        sized = wrong_sizes(pdf, blocks, scan_width(png)) + mixed_rows(pdf)
     except Exception as e:
         return Verdict(1.0, 0.0, 0, 0.0, (), (f"the rebuilt page could not be checked ({type(e).__name__}: {e})",))
     lost = lost_words(text, drawn)
@@ -232,4 +328,6 @@ def check_page(pdf: str, png: str, text: str, blocks: list[dict[str, Any]], dpi:
         reasons.append(f"its ink agrees with the scan's only {ink:.0%}")
     if missing:
         reasons.append("symbols are missing: " + " ".join(missing[:8]))
+    if sized:
+        reasons.append("type of the wrong size: " + "; ".join(sized[:3]))
     return Verdict(lost, over, off, ink, missing, tuple(reasons))

@@ -107,10 +107,17 @@ def read_layout(png: str, ocr: Mapping[str, Any], model: str, dpi: int, run: Run
 
 
 def rebuild_page(
-    png: str, ocr: Mapping[str, Any], out: str, dpi: int, typed: str | None = None, run: RunFn = models_run
+    png: str,
+    ocr: Mapping[str, Any],
+    out: str,
+    dpi: int,
+    typed: str | None = None,
+    run: RunFn = models_run,
+    corrected: str | None = None,
 ) -> None:
     """The page set again as a PDF with real text at `out`, from its stored layout (`ocr["layout"]["groups"]`). `typed` is a person's text:
-    it goes in as it stands, so a page whose typed lines are not the printed ones cannot be set line for line."""
+    it goes in as it stands, so a page whose typed lines are not the printed ones cannot be set line for line. `corrected` is the page's
+    corrected text, whose lines go in where they are the printed ones (`with_corrected`)."""
     layout = cast("dict[str, Any]", ocr.get("layout") or {})
     groups = layout.get("groups")
     if not groups:
@@ -119,7 +126,7 @@ def rebuild_page(
     context = numbered(ocr, run)
     if typed is None:
         params = {"preset": TEXT_PRESET, "context": context, "image": png, "max_tokens": 8192}
-        texts = answer_json(run("vision-language", params, TEXT_MODEL))
+        texts = with_corrected(answer_json(run("vision-language", params, TEXT_MODEL)), corrected or "", context)
     else:
         texts = typed_texts(typed, context)
     fit = run("font-match", {"mode": "fit", "lines": base.get("lines") or [], "image": png, "dpi": dpi}, None)
@@ -138,6 +145,29 @@ def rebuild_page(
         },
         DRAW,
     )
+
+
+READ_PRESET = "ocr-read-v2"
+
+
+def read_again(png: str, run: RunFn = models_run) -> str:
+    """The page's text read by the text model from the picture alone, with no OCR to lean on: what the gate checks a rebuilt page's words
+    against. eval ocr-lines (2026-11-24, 20 hard pages): Haiku finds 99.8 % of the printed lines, 0.3 % of characters wrong, $0.0008 a page."""
+    params = {"image": png, "prompt": "Transcribe this page.", "system_preset": READ_PRESET, "max_tokens": 4096}
+    return str(run("vision-language", params, TEXT_MODEL).get("text") or "")
+
+
+def with_corrected(texts: Mapping[str, Any], corrected: str, context: str) -> dict[str, Any]:
+    """page-text-fix's answer with the page's corrected text in place of it on every line that is one of the text's. The correction reads a
+    cleaned page (ocr-hard, 2026-11-24) and gets small capitals right that the line fix leaves misread ("PorrLy" for POLLY on the 1874 book);
+    the lines the text leaves out (a running head, a page number) keep the line fix."""
+    nums = [(int(m[1]), m[2]) for m in (NUMBERED.match(x) for x in context.splitlines()) if m]
+    fixed = {int(x["n"]): str(x["text"]) for x in cast("list[dict[str, Any]]", texts.get("lines") or [])}
+    lines = [x for x in corrected.splitlines() if x.strip()]
+    for line, k in zip(lines, align(lines, [t for _, t in nums]), strict=True):
+        if k is not None:
+            fixed[nums[k][0]] = line
+    return {**texts, "lines": [{"n": n, "text": t} for n, t in sorted(fixed.items())]}
 
 
 def typed_texts(typed: str, context: str) -> dict[str, Any]:

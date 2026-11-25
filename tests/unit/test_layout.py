@@ -94,6 +94,29 @@ def test_typed_text_is_sent_line_for_line_or_refused():
     ]  # a person's text is not corrected
 
 
+def test_a_corrected_line_replaces_the_line_fix_and_the_rest_keep_it():
+    context = "1 b1 [0,0,1,1] PUNCH AND JUDY. 9\n2 b1 [0,0,1,1] Porty.-I don't know.\n3 b1 [0,0,1,1] blurred"
+    fixed = {"lines": [{"n": 2, "text": "PorrLy.—I don't know."}, {"n": 3, "text": "made up"}], "note": 1}
+    assert layout.with_corrected(fixed, "POLLY.—I don't know.", context) == {
+        "lines": [{"n": 2, "text": "POLLY.—I don't know."}, {"n": 3, "text": "made up"}],
+        "note": 1,
+    }
+    assert layout.with_corrected({}, "", context) == {"lines": []}
+    run = run_with(
+        **{
+            "page-build": {"text": context},
+            "font-match": {},
+            "vision-language": {"json": {"lines": []}, "text": "A page"},
+        }
+    )
+    layout.rebuild_page(
+        "/p.png", {**OCR, "layout": {"groups": {"a": 1}}}, "/o.pdf", 300, None, run, "POLLY.—I don't know."
+    )
+    assert run.calls[-1][1]["texts"] == {"lines": [{"n": 2, "text": "POLLY.—I don't know."}]}
+    assert layout.read_again("/p.png", run) == "A page"
+    assert run.calls[-1][1]["system_preset"] == "ocr-read-v2"
+
+
 def test_what_the_service_says_is_said_in_words(monkeypatch, fake_models):
     fake_models.results = {"font-match": {"face": "x"}}
     assert layout.models_run("font-match", {}, None) == {"face": "x"}

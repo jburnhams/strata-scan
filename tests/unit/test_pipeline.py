@@ -313,7 +313,8 @@ def test_a_text_page_is_laid_out_and_set_again(make_book, fake_models, monkeypat
     assert all(
         j["params"]["styles"] == ["roman", "italic"] and j["params"]["crop"] and j["params"]["rules"] for j in draws
     )
-    assert {j["params"]["preset"] for j in fake_models.jobs if j["role"] == "vision-language"} == {"page-text-fix-v1"}
+    asked = [j["params"] for j in fake_models.jobs if j["role"] == "vision-language"]
+    assert {p.get("preset") or p.get("system_preset") for p in asked} == {"page-text-fix-v1", "ocr-read-v2"}
     assert all(os.path.isfile(files.rebuilt_pdf(b, p.id)) for p in texts)
     assert os.path.isfile(files.export(b, "book-rebuilt.pdf"))
     with zipfile.ZipFile(files.export(b, "book.zip")) as z:
@@ -409,6 +410,8 @@ def models_answers(service):
         return {"pdf": out, "page": {"width": 10, "height": 10, "blocks": blocks}}
 
     def ask(params):
+        if params.get("system_preset") == "ocr-read-v2":
+            return {"text": ""}  # no reading: the gate goes by the page's text
         if params["preset"] == "page-text-fix-v1":
             return {"json": {"lines": []}, "text": "{}"}
         return {"json": {"blocks": [{"lines": [1], "role": "body"}], "figures": []}, "text": "{}"}
