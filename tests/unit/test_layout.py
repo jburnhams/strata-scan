@@ -94,6 +94,31 @@ def test_typed_text_is_sent_line_for_line_or_refused():
     ]  # a person's text is not corrected
 
 
+def test_misread_words_are_put_right_from_the_corrected_text_and_the_lines_stay_the_prints():
+    context = (
+        "1 b1 [0,0,1,1] PUNCH AND JUDY. 9\n2 b1 [0,0,1,1] Porty.-I don't know.\n"
+        "3 b1 [0,0,1,1] She repeats the let-\n4 b1 [0,0,1,1] ters to Puxciu and he"
+    )
+    fixed = {"lines": [{"n": 2, "text": "PorrLy.—I don't know."}], "note": 1}
+    # the correction joins its lines, joins the split word and leaves the running head out
+    corrected = "POLLY.—I don't know. She repeats the letters to Punch and he"
+    assert layout.with_corrected(fixed, corrected, context) == {
+        "lines": [{"n": 2, "text": "POLLY.—I don't know."}, {"n": 4, "text": "ters to Punch and he"}],
+        "note": 1,
+    }
+    assert layout.with_corrected({}, "", context) == {"lines": []}
+    answers = {
+        "page-build": {"text": context},
+        "font-match": {},
+        "vision-language": {"json": {"lines": []}, "text": "T"},
+    }
+    run = run_with(**answers)
+    layout.rebuild_page("/p.png", {**OCR, "layout": {"groups": {"a": 1}}}, "/o.pdf", 300, None, run, corrected)
+    assert run.calls[-1][1]["texts"]["lines"][-1] == {"n": 4, "text": "ters to Punch and he"}
+    assert layout.read_again("/p.png", run) == "T"
+    assert run.calls[-1][1]["system_preset"] == "ocr-read-v2"
+
+
 def test_what_the_service_says_is_said_in_words(monkeypatch, fake_models):
     fake_models.results = {"font-match": {"face": "x"}}
     assert layout.models_run("font-match", {}, None) == {"face": "x"}

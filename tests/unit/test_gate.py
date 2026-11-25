@@ -95,3 +95,33 @@ def test_a_drawn_dagger_is_not_taken_for_a_box(tmp_path):
     text, _, _, blank = gate.read_chars(text_pdf(tmp_path / "t.pdf", LINES))
     assert "\u2020" in text
     assert not blank
+
+
+def test_a_line_set_too_big_for_its_block_and_a_word_set_small_beside_its_neighbours_fail(tmp_path):
+    big = [LINES[0], LINES[1], (30, 140, "a wholly separate line of type", 22), LINES[3]]
+    pdf = text_pdf(tmp_path / "big.pdf", big)
+    png = scan_png(tmp_path / "big.png", pdf)
+    blocks = blocks_of(big)
+    got = gate.wrong_sizes(pdf, blocks, gate.scan_width(png))
+    assert len(got) == 1
+    assert "1.6 times its block" in got[0]
+    assert gate.wrong_sizes(text_pdf(tmp_path / "ok.pdf", LINES), blocks, gate.scan_width(png)) == []
+    row = text_pdf(tmp_path / "row.pdf", [(30, 100, "ANTIQUITIES", 9), (120, 100, "AND CURIOSITIES", 30)])
+    assert gate.mixed_rows(row) == ["'ANTIQUITIES' beside 'AND'", "'ANTIQUITIES' beside 'CURIOSITIES'"]
+    assert gate.mixed_rows(text_pdf(tmp_path / "even.pdf", LINES)) == []
+    assert "type of the wrong size" in gate.check_page(pdf, png, TEXT, blocks, DPI).reasons[-1]
+
+
+def test_a_scan_that_will_not_open_has_no_width(tmp_path):
+    with pytest.raises(ValueError, match="could not be read"):
+        gate.scan_width(str(tmp_path / "no.png"))
+
+
+def test_the_words_must_be_there_by_both_readings(tmp_path):
+    png = scan_png(tmp_path / "s.png", text_pdf(tmp_path / "s.pdf", LINES))
+    short = text_pdf(tmp_path / "short.pdf", LINES[:3])
+    by_text = gate.check_page(short, png, TEXT, blocks_of(LINES), DPI)
+    stopped = gate.check_page(short, png, TEXT, blocks_of(LINES), DPI, "\n".join(t for _, _, t in LINES[:3]))
+    assert stopped.words_lost == by_text.words_lost > gate.LOST
+    missed = gate.check_page(short, png, "\n".join(t for _, _, t in LINES[:3]), blocks_of(LINES), DPI, TEXT)
+    assert missed.words_lost == by_text.words_lost

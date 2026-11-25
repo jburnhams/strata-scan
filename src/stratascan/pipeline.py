@@ -493,18 +493,28 @@ class Runner:
                 scan_dpi(page),
                 (page.text or "") if page.text_edited else None,
                 self.run_model,
+                page.text,
             )
         except layout.LayoutError as e:
             files.remove(out)
             raise StageError(str(e)) from e
         laid = cast("dict[str, Any]", (page.ocr or {}).get("layout") or {})
         blocks = cast("list[dict[str, Any]]", laid.get("blocks") or [])
-        verdict = gate.check_page(out, png, page.text or "", blocks, scan_dpi(page))
+        text, again = page.text or "", None
+        # a person's text is the one to hold the page to; otherwise also a reading that owes the OCR nothing
+        if not page.text_edited:
+            try:
+                got = layout.read_again(png, self.run_model)
+                # a refusal or a description would fail the page for nothing
+                again = got if plausible(text, got) else None
+            except layout.LayoutError as e:
+                log.warning("page %s: no second reading to check by: %s", page.id, e)
+        verdict = gate.check_page(out, png, text, blocks, scan_dpi(page), again)
         with store.session() as s:
             p = s.get(Page, page.id)
             if p is not None and p.ocr is not None:
                 p.ocr = dict(
-                    p.ocr, gate=verdict.record()
+                    p.ocr, gate={**verdict.record(), "by": "text" if again is None else "both"}
                 )  # a new dict: SQLAlchemy does not see a JSON column change in place
 
     def stage_export(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
