@@ -11,7 +11,9 @@
 A stage works on the whole book or on some pages (`pages`: after a person moves a crop, only that page is drawn and read again). Hand work
 is kept: detect leaves a scan alone if a person set any of its pages, read keeps a corrected text and hand-drawn pictures. One book stage
 runs at a time, so two requests never write the same files; inside a stage, pages are done `settings.workers` at once (OCR waits on the
-strata-models service, the pixel work in OpenCV releases the GIL). Progress is the book's `stage`, `done` and `total`, which the web app
+strata-models service, the pixel work in OpenCV releases the GIL). A stage's calls to the cloud models are queued ahead in bulk (ahead.py:
+20 or more go through strata-models' batch API at half the price, answered within a day): `read` does every page's OCR first, then queues
+their corrections and layouts; `rebuild` queues every page's line texts and second reading before it sets the first. Progress is the book's `stage`, `done` and `total`, which the web app
 polls; a failure is the book's `error` and the failing page's `error`, in words, and the stage carries on with the other pages.
 
 After the OCR, a text page is read by Tesseract again from a cleaned picture (`reread`: the eval ocr-hard's `adaptive`) and that text is
@@ -27,8 +29,9 @@ import logging
 import os
 import threading
 from collections import deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, cast
@@ -38,7 +41,7 @@ import numpy as np
 from sqlalchemy import delete, select, update
 from strata_python.clients import models as sm
 
-from stratascan import export, figures, files, gate, geometry, layout, rows, settings, sources, store
+from stratascan import ahead, export, figures, files, gate, geometry, layout, rows, settings, sources, store
 from stratascan.db.models import Book, Figure, Page, Scan
 
 log = logging.getLogger("stratascan")
@@ -83,12 +86,16 @@ def models_reread(path: str, lang: str, dpi: int) -> dict[str, Any]:
 CorrectFn = Callable[[str, str, str], str]
 
 
-def models_correct(path: str, text: str, model: str) -> str:
+def correct_params(path: str, text: str, model: str) -> dict[str, Any]:
     params: dict[str, Any] = {"image": path, "prompt": text, "system_preset": "ocr-correct-v2", "max_tokens": 4096}
     if not model.endswith("-api"):  # the local models; a cloud model runs as the eval ran it
         params["temperature"] = 0.0
+    return params
+
+
+def models_correct(path: str, text: str, model: str) -> str:
     try:
-        r = sm.run("vision-language", params, app=APP, model=model)
+        r = sm.run("vision-language", correct_params(path, text, model), app=APP, model=model)
     except sm.Unavailable as e:
         raise StageError(f"strata-models is not running ({e})") from e
     except sm.JobFailed as e:
@@ -105,6 +112,22 @@ def plausible(before: str, after: str) -> bool:
 
 class StageError(RuntimeError):
     """A failure to show the person, in words."""
+
+
+@dataclass(frozen=True)
+class Reading:
+    """A page as the read stage's first pass leaves it: its OCR, what was found in it, and the text to correct (`prompt`, None when there
+    is none to correct; `prompt_error` when the cleaned reading failed)."""
+
+    png: str
+    r: dict[str, Any]
+    img: geometry.Image
+    boxes: list[tuple[int, int, int, int]]
+    confs: list[float]
+    sure: int
+    kind: str
+    prompt: str | None
+    prompt_error: str | None
 
 
 @dataclass(frozen=True)
@@ -139,9 +162,9 @@ class Runner:
         run_model: layout.RunFn | None = layout.models_run,
     ) -> None:
         self.ocr = ocr
-        self.correct = correct
+        self.correct: CorrectFn | None = correct
         self.reread = reread
-        self.run_model = run_model  # None: no layout (tests)
+        self.run_model: layout.RunFn | None = run_model  # None: no layout (tests)
         self._q: deque[Task] = deque()
         self._cv = threading.Condition()
         self._busy = False
@@ -261,6 +284,83 @@ class Runner:
                 self._progress(book_id, done=done)
         return errors
 
+    @contextmanager
+    def queued_ahead(self, calls: list[ahead.Call]) -> Generator[None]:
+        """While a stage runs: its planned cloud calls queued in bulk (ahead.py; 20 or more on a Claude model go through its batch API at
+        half the price) and answered from there when a page makes them. One stage runs at a time, so swapping the run functions is safe."""
+        if not calls:
+            yield
+            return
+        bulk = ahead.Ahead()
+        bulk.send(calls)
+        run, correct = self.run_model, self.correct
+        if run is not None:
+            self.run_model = bulk.wrap(
+                run, lambda role, e: layout.LayoutError(f"strata-models could not do it ({role}): {e}")
+            )
+        if correct is not None:
+            plain = correct
+
+            def at_once(role: str, params: dict[str, Any], model: str | None) -> dict[str, Any]:
+                return {"text": plain(str(params["image"]), str(params["prompt"]), str(model))}
+
+            answered = bulk.wrap(at_once, lambda role, e: StageError(f"strata-models could not correct the page: {e}"))
+
+            def queued(png: str, text: str, model: str) -> str:
+                return str(answered("vision-language", correct_params(png, text, model), model).get("text") or "")
+
+            self.correct = queued
+        try:
+            yield
+        finally:
+            self.run_model, self.correct = run, correct
+
+    def read_calls(self, pages: list[Page], readings: dict[int, "Reading"]) -> list[ahead.Call]:
+        """The read stage's cloud calls, known once every page has its OCR: each text page's correction and layout. Only when they are the
+        client's own (a stand-in in a test is called as it is)."""
+        calls: list[ahead.Call] = []
+        fix, lay = settings.correct_model(), settings.layout_model()
+        for p in pages:
+            rd = readings[p.id]
+            if self.correct is models_correct and fix is not None and rd.prompt:
+                calls.append(("vision-language", correct_params(rd.png, rd.prompt, fix), fix))
+            if (
+                self.run_model is layout.models_run
+                and lay is not None
+                and rd.kind == "text"
+                and clean_text(rd.r, rd.sure, rd.kind)
+            ):
+                try:
+                    context = layout.numbered(rd.r, layout.models_run)
+                except layout.LayoutError:
+                    continue
+                if context:
+                    calls.append(("vision-language", layout.layout_params(rd.png, context), lay))
+        return calls
+
+    def rebuild_calls(self, pages: list[Page]) -> list[ahead.Call]:
+        """The rebuild stage's cloud calls, known before any page is set: each page's line texts put right and its second reading. A page
+        whose plan fails is left to make its calls when it is set."""
+        calls: list[ahead.Call] = []
+        if self.run_model is not layout.models_run:
+            return calls
+        for p in pages:
+            png = files.page_png(p.book_id, p.id)
+            if p.text_edited or not os.path.isfile(png):
+                continue
+            try:
+                _, ocr = self.tidied(p, png)
+                if not (cast("dict[str, Any]", ocr.get("layout") or {})).get("groups"):
+                    continue
+                run = layout.models_run
+                context = layout.numbered(layout.settled(ocr, p.ocr or {}, run), run)
+            except (layout.LayoutError, StageError) as e:
+                log.warning("page %s: its calls are not queued ahead: %s", p.id, e)
+                continue
+            calls.append(("vision-language", layout.text_params(png, context), layout.TEXT_MODEL))
+            calls.append(("vision-language", layout.read_params(png), layout.TEXT_MODEL))
+        return calls
+
     def stage_import(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
         with store.session() as s:
             book = s.get(Book, book_id)
@@ -358,11 +458,24 @@ class Runner:
             todo = list(s.scalars(q))
         if not todo:
             raise StageError("the book has no pages: find them first")
-        errors = self._each(book_id, todo, lambda p: self.read_page(p, lang))
+        # two passes: the OCR of every page, then its cloud calls (correction, layout) queued in bulk and each page finished as they come
+        readings: dict[int, Reading] = {}
+
+        def first(p: Page) -> None:
+            readings[p.id] = self.first_read(p, lang)
+
+        errors = self._each(book_id, todo, first)
+        read = [p for p in todo if p.id in readings]
+        with self.queued_ahead(self.read_calls(read, readings)):
+            errors += self._each(book_id, read, lambda p: self.finish_read(p, readings[p.id]))
         if errors:
             self._progress(book_id, error=f"{len(errors)} of {len(todo)} pages could not be read: {errors[0]}")
 
     def read_page(self, page: Page, lang: str) -> None:
+        """Read one page: its OCR, then its correction and layout (the stage does every page's first, then queues their cloud calls)."""
+        self.finish_read(page, self.first_read(page, lang))
+
+    def first_read(self, page: Page, lang: str) -> Reading:
         if not page.rendered or not os.path.isfile(files.page_png(page.book_id, page.id)):
             render(page)
         png = files.page_png(page.book_id, page.id)
@@ -387,8 +500,12 @@ class Runner:
         ):  # the first read guesses the kind; a person's or an earlier read's stays
             area = sum(w * h for _, _, w, h in boxes) / float(img.shape[0] * img.shape[1])
             kind = "picture" if area > 0.3 and sure < 25 else "blank" if not boxes and sure < 3 else "text"
-        corrected = self.correct_page(page, png, r, sure, kind, lang)
-        r = dict(r, corrected=corrected, layout=self.layout_page(page, png, r, sure, kind))
+        prompt, why = self.correction_prompt(page, png, r, sure, kind, lang)
+        return Reading(png, r, img, boxes, confs, sure, kind, prompt, why)
+
+    def finish_read(self, page: Page, rd: Reading) -> None:
+        png, img, boxes, confs, sure, kind = rd.png, rd.img, rd.boxes, rd.confs, rd.sure, rd.kind
+        r = dict(rd.r, corrected=self.correct_page(rd), layout=self.layout_page(page, png, rd.r, sure, kind))
         files.remove(files.rebuilt_pdf(page.book_id, page.id))  # set from the reading this one replaces
         with store.session() as s:
             p = s.get(Page, page.id)
@@ -418,28 +535,41 @@ class Runner:
         for fid, x, y, w, h in cut:
             cv2.imwrite(files.figure_png(page.book_id, fid), img[y : y + h, x : x + w])
 
-    def correct_page(
+    def correction_prompt(
         self, page: Page, png: str, r: dict[str, Any], sure: int, kind: str, lang: str
-    ) -> dict[str, Any] | None:
-        """The correction of a page's OCR text, as {model, text, lines: the OCR lines it corrected} (or {model, error}), or None when there is none to do: correction off, a
-        page a person typed, or one with no text or that is not a text page (a cover, a picture, a blank)."""
+    ) -> tuple[str | None, str | None]:
+        """(the text to correct, why there is none): (None, None) when there is no correction to do: correction off, a page a person typed, or
+        one with no text or that is not a text page (a cover, a picture, a blank)."""
         model = settings.correct_model()
         text = clean_text(r, sure, kind)
         if self.correct is None or model is None or page.text_edited or kind != "text" or not text:
-            return None
+            return None, None
         try:
-            prompt = self.cleaned_text(png, lang, scan_dpi(page), kind, text)
-            fixed = self.correct(png, prompt, model).strip()
+            return self.cleaned_text(png, lang, scan_dpi(page), kind, text), None
         except StageError as e:
-            log.warning("page %s: correction failed: %s", page.id, e)
+            return None, str(e)
+
+    def correct_page(self, rd: Reading) -> dict[str, Any] | None:
+        """The correction of a page's OCR text, as {model, text, lines: the OCR lines it corrected} (or {model, error}), or None when there is
+        none to do (`correction_prompt`)."""
+        model = settings.correct_model()
+        if model is None or self.correct is None or (rd.prompt is None and rd.prompt_error is None):
+            return None
+        if rd.prompt is None:
+            log.warning("correction failed: %s", rd.prompt_error)
+            return {"model": model, "error": rd.prompt_error}
+        try:
+            fixed = self.correct(rd.png, rd.prompt, model).strip()
+        except StageError as e:
+            log.warning("correction failed: %s", e)
             return {"model": model, "error": str(e)}
-        if not plausible(prompt, fixed):
+        if not plausible(rd.prompt, fixed):
             return {
                 "model": model,
-                "error": f"the correction was {len(fixed)} characters for {len(prompt)}: kept the OCR text",
+                "error": f"the correction was {len(fixed)} characters for {len(rd.prompt)}: kept the OCR text",
             }
         # the OCR lines it corrected, so the export can put each corrected line where its OCR line was (export.page_markdown)
-        return {"model": model, "text": fixed, "lines": kept_lines(r, sure, kind)}
+        return {"model": model, "text": fixed, "lines": kept_lines(rd.r, rd.sure, rd.kind)}
 
     def cleaned_text(self, png: str, lang: str, dpi: int, kind: str, text: str) -> str:
         """The text to correct: Tesseract's reading of the cleaned page, unless there is none, or cleaning lost much of the page."""
@@ -474,7 +604,10 @@ class Runner:
             raise StageError("there are no read text pages to set again: read the book first")
         # one at a time: a type fit is minutes of CPU and the heaviest job strata-models runs for this app (fourteen queued pages once ran the
         # service out of memory, 2026-11-24)
-        errors = self._each(book_id, todo, self.rebuild_one, at_once=1)
+        with self.queued_ahead(
+            self.rebuild_calls(todo)
+        ):  # the cloud calls of every page in bulk; the type fits still one at a time
+            errors = self._each(book_id, todo, self.rebuild_one, at_once=1)
         if errors:
             self._progress(book_id, error=f"{len(errors)} of {len(todo)} pages could not be set again: {errors[0]}")
 
@@ -486,9 +619,7 @@ class Runner:
             render(page)
         out = files.rebuilt_pdf(page.book_id, page.id)
         dpi = scan_dpi(page)
-        img = np.asarray(read_image(png), dtype=np.uint8)
-        gray = np.asarray(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), dtype=np.uint8)
-        ocr = rows.tidy(page.ocr or {}, gray, dpi)
+        gray, ocr = self.tidied(page, png)
         try:
             self.set_in_type(page, ocr, png, out, dpi, page.ocr or {})
         except layout.LayoutError as e:
@@ -509,6 +640,12 @@ class Runner:
                     "from_rows": list(also),
                 }
                 p.ocr = dict(p.ocr, gate=record)  # a new dict: SQLAlchemy does not see a JSON column change in place
+
+    def tidied(self, page: Page, png: str) -> tuple[gate.Gray, dict[str, Any]]:
+        """(the page in grey, its OCR tidied by its rows of ink: rows.tidy), as it is set."""
+        img = np.asarray(read_image(png), dtype=np.uint8)
+        gray = np.asarray(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), dtype=np.uint8)
+        return gray, rows.tidy(page.ocr or {}, gray, scan_dpi(page))
 
     def set_in_type(
         self, page: Page, ocr: dict[str, Any], png: str, out: str, dpi: int, was: dict[str, Any] | None = None

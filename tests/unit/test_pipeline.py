@@ -305,6 +305,11 @@ def test_a_text_page_is_laid_out_and_set_again(make_book, fake_models, monkeypat
     assert all(p.ocr["layout"]["model"] == "claude-opus-5-5-api" and p.ocr["layout"]["blocks"] for p in texts)
     asked = [j for j in fake_models.jobs if j["role"] == "vision-language"]
     assert {(j["model"], j["params"]["preset"]) for j in asked} == {("claude-opus-5-5-api", "page-layout-fix-v2")}
+    assert len(asked) == len(
+        texts
+    )  # each page's layout asked once, all of them in one bulk call before any page was finished
+    first = min(j["id"] for j in asked)
+    assert [j["id"] for j in asked] == list(range(first, first + len(asked)))
     fake_models.jobs.clear()
     r.run(pipeline.Task(b, ("rebuild", "export")))
     draws = [j for j in fake_models.jobs if j["role"] == "page-build" and j["params"].get("texts") is not None]
@@ -313,8 +318,13 @@ def test_a_text_page_is_laid_out_and_set_again(make_book, fake_models, monkeypat
     assert all(
         j["params"]["styles"] == ["roman", "italic"] and j["params"]["crop"] and j["params"]["rules"] for j in draws
     )
-    asked = [j["params"] for j in fake_models.jobs if j["role"] == "vision-language"]
-    assert {p.get("preset") or p.get("system_preset") for p in asked} == {"page-text-fix-v1", "ocr-read-v2"}
+    asked = [j for j in fake_models.jobs if j["role"] == "vision-language"]
+    assert {j["params"].get("preset") or j["params"].get("system_preset") for j in asked} == {
+        "page-text-fix-v1",
+        "ocr-read-v2",
+    }
+    assert len(asked) == 2 * len(texts)  # queued ahead: none asked again when its page was set
+    assert max(j["id"] for j in asked) < min(j["id"] for j in draws)  # all before the first page was drawn
     assert all(os.path.isfile(files.rebuilt_pdf(b, p.id)) for p in texts)
     assert os.path.isfile(files.export(b, "book-rebuilt.pdf"))
     with zipfile.ZipFile(files.export(b, "book.zip")) as z:

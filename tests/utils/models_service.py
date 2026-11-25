@@ -47,6 +47,17 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        if (
+            self.path.split("?")[0] == "/api/jobs/bulk"
+        ):  # normal and low work, one job an item (the service's own bulk endpoint)
+            rest = {k: v for k, v in body.items() if k not in ("items", "batch")}
+            items = (
+                body.get("items") or []
+            )  # `bulk`: how many came in the same call, so a test sees which went together
+            return self._send(201, {"ids": [self._job({**rest, "params": p, "bulk": len(items)}) for p in items]})
+        return self._send(200, {"id": self._job(body), "status": "queued"})
+
+    def _job(self, body):
         with self.server.lock:
             self.server.count += 1
             job_id = self.server.count
@@ -64,7 +75,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.server.jobs[job_id] = {"id": job_id, "status": "done", "result": result}
         except Exception as e:
             self.server.jobs[job_id] = {"id": job_id, "status": "failed", "error": str(e)}
-        return self._send(200, {"id": job_id, "status": "queued"})
+        return job_id
 
 
 class ModelsService(ThreadingHTTPServer):
