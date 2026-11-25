@@ -34,8 +34,30 @@ jobs:
           case "$RUNNER_OS" in
             Linux) sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr ;;
             macOS) brew install tesseract ;;
-            Windows) choco install tesseract -y --no-progress && echo "C:\Program Files\Tesseract-OCR" >> "$GITHUB_PATH" ;;
+            # The Chocolatey feed has refused the package (2026-11-25: 503s and 504s, "installed 0/0 packages", exit 0), so fall back to
+            # conda-forge's build through micromamba (one static binary from GitHub), and check the command runs either way.
+            Windows)
+              choco install tesseract -y --no-progress || true
+              if [ -x "/c/Program Files/Tesseract-OCR/tesseract.exe" ]; then
+                echo "C:\Program Files\Tesseract-OCR" >> "$GITHUB_PATH"
+              else
+                curl -fsSL --retry 4 -o "$RUNNER_TEMP/micromamba.exe" https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-win-64
+                "$RUNNER_TEMP/micromamba.exe" create -y -q -r "$RUNNER_TEMP/mamba" -p "$RUNNER_TEMP/tess" -c conda-forge tesseract
+                cygpath -w "$RUNNER_TEMP/tess/Library/bin" >> "$GITHUB_PATH"
+                echo "TESSDATA_PREFIX=$(cygpath -w "$RUNNER_TEMP/tess/Library/share/tessdata")" >> "$GITHUB_ENV"  # not next to the binary, where Tesseract looks without conda activation
+                # conda-forge's package has no languages (0 listed), so add English and the tsv and pdf outputs as apt's tesseract-ocr has them
+                td="$RUNNER_TEMP/tess/Library/share/tessdata"; mkdir -p "$td/configs"
+                curl -fsSL --retry 4 -o "$td/eng.traineddata" https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata
+                for f in configs/tsv configs/pdf pdf.ttf; do [ -f "$td/$f" ] || curl -fsSL --retry 4 -o "$td/$f" "https://github.com/tesseract-ocr/tesseract/raw/main/tessdata/$f"; done
+              fi ;;
           esac
+      - name: Tesseract is installed
+        shell: bash
+        run: |
+          tesseract --version | head -1
+          langs=$(tesseract --list-langs 2>&1 | tr -d '\r')  # Windows prints CRLF
+          echo "$langs"
+          grep -qx eng <<<"$langs"
       - run: uv sync --locked
       - name: Integration tests (CLI and HTTP API end-to-end)
         run: uv run pytest tests/integration -n auto --durations=10

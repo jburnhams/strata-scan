@@ -4,6 +4,16 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-25
 
+**A book's Claude calls are queued in bulk, at the batch price (branch `claude/calls-in-bulk`)**
+Jonathan asked for strata-models' bulk endpoint to be used everywhere, and pointed out that a page's cloud calls are small once its OCR is done, so they can be batched. strata-models only batches a bulk call of 20 or more (Claude Message Batches, half the price, answered within a day); this app made every call alone and waited for it.
+- `ahead.py` **new**: calls a stage can name ahead are queued in one bulk call per role and model (`clients.models.submit_many`), then answered from there when a page makes them; any other call is made at once, as before, and so is every planned call when strata-models refuses the bulk call.
+- `pipeline.py`: `read` runs in two passes: every page's OCR first (`first_read`), then the corrections and layouts of every text page queued in bulk (`read_calls`) and each page finished as they come (`finish_read`; `read_page` does both for one page). `rebuild` queues each page's line-text fix and second reading before the first page is set (`rebuild_calls`); the type fits stay one page at a time. `correct_params`, `tidied`, `correction_prompt` split out.
+- `layout.py`: `layout_params`, `text_params`, `read_params` and `settled` split out, so a stage plans the very calls the page makes.
+- strata-python 0.2.22 or later (`submit_many`; normal and low jobs go through strata-models' bulk endpoint, the only one it takes them on now). `tests/utils/models_service.py` answers the bulk endpoint too.
+- Tests: `test_ahead.py` **new**; the layout, rebuild and CLI tests check that the calls went in bulk before any page needed them.
+- `pipeline.py`: a `Reading` keeps no decoded image (the stage holds every page's until the bulk answers come; a 200-page book of 3000x4000 scans would be about 7 GB), so `finish_read` reads the page again to cut its pictures, and drops each reading once its page is done (a review finding).
+- `.github/workflows/unit.yml`, `integration.yml`: on Windows, when Chocolatey leaves no `tesseract.exe` (its feed refused the package on 2026-11-25 and still exited 0), install conda-forge's build through micromamba instead; a new step checks `tesseract --version` on every OS, so a missing command fails at install, not as 15 test errors.
+
 **Pages the gate kept as scans go into type: lines the OCR missed put on their rows of ink, and fairer checks (branch `rows-from-ink`)**
 Jonathan: look at the pages that couldn't be processed, some seem fairly normal. Ten of the 1874 book's 25 set pages were scans. Tesseract had skipped whole lines of display type on the adverts ("PAPERHANGINGS", "STRAW GOODS"), though the corrected text had them, or boxed lines with the page's frame or a neighbouring row; page 10 failed on one slip of the second reader; page 7's overlaps were italics leaning on each other.
 

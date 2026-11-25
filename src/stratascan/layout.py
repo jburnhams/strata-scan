@@ -27,6 +27,7 @@ from stratascan.align import align, letters
 APP = "strata-scan"
 LAYOUT_PRESET = "page-layout-fix-v2"
 TEXT_PRESET = "page-text-fix-v1"
+READ_PRESET = "ocr-read-v2"
 TEXT_MODEL = "claude-haiku-5-5-api"
 # `pagebuild` only draws: the role's default model would ask Opus for a layout of its own
 DRAW = "pagebuild"
@@ -75,14 +76,36 @@ def numbered(ocr: Mapping[str, Any], run: RunFn = models_run) -> str:
     return str(run("page-build", {"ocr": plain(ocr), "list_lines": True}, DRAW).get("text") or "")
 
 
+def layout_params(png: str, context: str) -> dict[str, Any]:
+    """The layout call's params for a page whose numbered lines are `context` (`read_layout`; planned ahead by the read stage)."""
+    return {"preset": LAYOUT_PRESET, "context": context, "image": png, "max_tokens": 8192}
+
+
+def text_params(png: str, context: str) -> dict[str, Any]:
+    """The call putting each line's text right, for a page whose numbered lines are `context` (`rebuild_page`; planned ahead)."""
+    return {"preset": TEXT_PRESET, "context": context, "image": png, "max_tokens": 8192}
+
+
+def read_params(png: str) -> dict[str, Any]:
+    """The call reading a page from its picture alone (`read_again`; planned ahead)."""
+    return {"image": png, "prompt": "Transcribe this page.", "system_preset": READ_PRESET, "max_tokens": 4096}
+
+
+def settled(ocr: Mapping[str, Any], was: Mapping[str, Any] | None, run: RunFn = models_run) -> Mapping[str, Any]:
+    """The OCR answer a stored layout's line numbers refer to: `ocr` (tidied), unless its lines are split otherwise than `was`, the answer
+    the layout was read from; then `was`, with the layout."""
+    if was is not None and (numbered(ocr, run).count("\n") != numbered(was, run).count("\n")):
+        return dict(was, layout=ocr.get("layout") or {})
+    return ocr
+
+
 def read_layout(png: str, ocr: Mapping[str, Any], model: str, dpi: int, run: RunFn = models_run) -> dict[str, Any]:
     """A page's layout as {model, groups, blocks: [{role, lines: [box, ...]}]}: the model's groups of numbered lines (what `rebuild_page`
     draws again) and, for the export, each block's role with its lines' boxes in page pixels, in reading order."""
     context = numbered(ocr, run)
     if not context:
         raise LayoutError("the page has no lines to lay out")
-    params = {"preset": LAYOUT_PRESET, "context": context, "image": png, "max_tokens": 8192}
-    groups = answer_json(run("vision-language", params, model))
+    groups = answer_json(run("vision-language", layout_params(png, context), model))
     if not groups.get("blocks"):
         raise LayoutError("the layout model found no blocks")
     with tempfile.TemporaryDirectory() as tmp:
@@ -125,13 +148,13 @@ def rebuild_page(
     groups = layout.get("groups")
     if not groups:
         raise LayoutError(str(layout.get("error") or "the page's layout has not been read: read the page again"))
-    if was is not None and (numbered(ocr, run).count("\n") != numbered(was, run).count("\n")):
-        ocr = dict(was, layout=layout)  # its lines are split otherwise, so the layout's numbers would be other lines'
+    ocr = settled(ocr, was, run)  # its lines may be split otherwise, so the layout's numbers would be other lines'
     base = plain(ocr)
     context = numbered(ocr, run)
     if typed is None:
-        params = {"preset": TEXT_PRESET, "context": context, "image": png, "max_tokens": 8192}
-        texts = with_corrected(answer_json(run("vision-language", params, TEXT_MODEL)), corrected or "", context)
+        texts = with_corrected(
+            answer_json(run("vision-language", text_params(png, context), TEXT_MODEL)), corrected or "", context
+        )
     else:
         texts = typed_texts(typed, context)
     fit = run("font-match", {"mode": "fit", "lines": base.get("lines") or [], "image": png, "dpi": dpi}, None)
@@ -152,14 +175,10 @@ def rebuild_page(
     )
 
 
-READ_PRESET = "ocr-read-v2"
-
-
 def read_again(png: str, run: RunFn = models_run) -> str:
     """The page's text read by the text model from the picture alone, with no OCR to lean on: what the gate checks a rebuilt page's words
     against. eval ocr-lines (2026-11-24, 20 hard pages): Haiku finds 99.8 % of the printed lines, 0.3 % of characters wrong, $0.0008 a page."""
-    params = {"image": png, "prompt": "Transcribe this page.", "system_preset": READ_PRESET, "max_tokens": 4096}
-    return str(run("vision-language", params, TEXT_MODEL).get("text") or "")
+    return str(run("vision-language", read_params(png), TEXT_MODEL).get("text") or "")
 
 
 def with_corrected(texts: Mapping[str, Any], corrected: str, context: str) -> dict[str, Any]:

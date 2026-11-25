@@ -12,7 +12,7 @@ dependencies = [
     # The shared server code (settings, web serving, CLI commands, the database, the strata-models client, the test plugin and the gate), from
     # PyPI. It brings FastAPI, uvicorn and pydantic; [db] adds SQLAlchemy, Alembic and psycopg. While 0.x a minor release may break, so cap below
     # the next minor; dependabot moves the lock inside the range.
-    "strata-python[db]>=0.2.13,<0.3",
+    "strata-python[db]>=0.2.22,<0.3",
     "tzdata; sys_platform == 'win32'",   # IANA timezone database, needed on Windows for zoneinfo
     "opencv-python-headless>=5.0.0.93",
     "numpy>=2.4.6",

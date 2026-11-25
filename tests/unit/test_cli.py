@@ -55,6 +55,9 @@ def test_add_books_run_and_export(capsys, tmp_path, models_service):
     with pytest.raises(SystemExit, match="no book 99"):
         cli.main(["run", "99", "read"])
     assert {j["params"]["dpi"] for j in models_service.submitted if j["role"] == "ocr"} == {150}
+    fixes = [j for j in models_service.submitted if j["params"].get("system_preset") == "ocr-correct-v2"]
+    assert fixes
+    assert {j["bulk"] for j in fixes} == {len(fixes)}  # every page's correction queued in one bulk call, after the OCR
 
 
 def test_set_and_serve_commands(capsys, monkeypatch):

@@ -26,18 +26,22 @@ def test_without_strata_models(monkeypatch):
 def test_ocr_through_the_client(http_server, monkeypatch, tmp_path):
     """models_ocr sends the role's params and returns its answer; a failed job and a missing service become words."""
     monkeypatch.setenv("STRATA_MODELS_URL", http_server.url)
-    http_server.route("POST", "/api/jobs", {"id": 5, "status": "queued"})
     http_server.route(
-        "GET", "/api/jobs/5", {"id": 5, "status": "done", "result": {"text": "Punch", "lines": []}}, once=True
-    )
+        "POST", "/api/jobs/bulk", {"ids": [5]}
+    )  # normal priority work is queued in bulk, as a call of one
+    for _ in range(2):  # the row read back after the bulk call, then the wait
+        http_server.route(
+            "GET", "/api/jobs/5", {"id": 5, "status": "done", "result": {"text": "Punch", "lines": []}}, once=True
+        )
     assert pipeline.models_ocr("/p.png", "/p.pdf", "eng", 360) == {"text": "Punch", "lines": []}
     assert http_server.requests[0].json() | {} == {
         "role": "ocr",
-        "params": {"path": "/p.png", "pdf": "/p.pdf", "lang": "eng", "dpi": 360},
+        "items": [{"path": "/p.png", "pdf": "/p.pdf", "lang": "eng", "dpi": 360}],
         "app": "strata-scan",
         "priority": "normal",
         "model": None,
         "options": None,
+        "batch": None,
     }
     http_server.route("GET", "/api/jobs/5", {"id": 5, "status": "failed", "error": "no such picture"})
     with pytest.raises(pipeline.StageError, match="could not read the page: no such picture"):
