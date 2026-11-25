@@ -38,7 +38,7 @@ import numpy as np
 from sqlalchemy import delete, select, update
 from strata_python.clients import models as sm
 
-from stratascan import export, figures, files, gate, geometry, layout, settings, sources, store
+from stratascan import export, figures, files, gate, geometry, layout, rows, settings, sources, store
 from stratascan.db.models import Book, Figure, Page, Scan
 
 log = logging.getLogger("stratascan")
@@ -485,37 +485,88 @@ class Runner:
         if not os.path.isfile(png):
             render(page)
         out = files.rebuilt_pdf(page.book_id, page.id)
+        dpi = scan_dpi(page)
+        img = np.asarray(read_image(png), dtype=np.uint8)
+        gray = np.asarray(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), dtype=np.uint8)
+        ocr = rows.tidy(page.ocr or {}, gray, dpi)
         try:
-            layout.rebuild_page(
-                png,
-                page.ocr or {},
-                out,
-                scan_dpi(page),
-                (page.text or "") if page.text_edited else None,
-                self.run_model,
-                page.text,
-            )
+            self.set_in_type(page, ocr, png, out, dpi, page.ocr or {})
         except layout.LayoutError as e:
             files.remove(out)
             raise StageError(str(e)) from e
-        laid = cast("dict[str, Any]", (page.ocr or {}).get("layout") or {})
-        blocks = cast("list[dict[str, Any]]", laid.get("blocks") or [])
-        text, again = page.text or "", None
-        # a person's text is the one to hold the page to; otherwise also a reading that owes the OCR nothing
-        if not page.text_edited:
-            try:
-                got = layout.read_again(png, self.run_model)
-                # a refusal or a description would fail the page for nothing
-                again = got if plausible(text, got) else None
-            except layout.LayoutError as e:
-                log.warning("page %s: no second reading to check by: %s", page.id, e)
-        verdict = gate.check_page(out, png, text, blocks, scan_dpi(page), again)
+        again = self.second_reading(page, png)
+        verdict = self.judge(page, ocr, png, out, dpi, again)
+        fixed, also = 0, ()
+        if not verdict.passed and not page.text_edited:
+            verdict, fixed, also = self.set_from_rows(page, ocr, gray, png, out, dpi, again, verdict)
         with store.session() as s:
             p = s.get(Page, page.id)
             if p is not None and p.ocr is not None:
-                p.ocr = dict(
-                    p.ocr, gate={**verdict.record(), "by": "text" if again is None else "both"}
-                )  # a new dict: SQLAlchemy does not see a JSON column change in place
+                record = {
+                    **verdict.record(),
+                    "by": "text" if again is None else "both",
+                    "lines_put_right": fixed,
+                    "from_rows": list(also),
+                }
+                p.ocr = dict(p.ocr, gate=record)  # a new dict: SQLAlchemy does not see a JSON column change in place
+
+    def set_in_type(
+        self, page: Page, ocr: dict[str, Any], png: str, out: str, dpi: int, was: dict[str, Any] | None = None
+    ) -> None:
+        if self.run_model is None:
+            raise layout.LayoutError("strata-models is not set up")
+        typed = (page.text or "") if page.text_edited else None
+        layout.rebuild_page(png, ocr, out, dpi, typed, self.run_model, page.text, was)
+
+    def second_reading(self, page: Page, png: str) -> str | None:
+        """The page read again by another route, to check its words by; None for a person's text (the one to hold the page to) or none to be had."""
+        if page.text_edited or self.run_model is None:
+            return None
+        try:
+            got = layout.read_again(png, self.run_model)
+        except layout.LayoutError as e:
+            log.warning("page %s: no second reading to check by: %s", page.id, e)
+            return None
+        return got if plausible(page.text or "", got) else None  # a refusal would fail the page for nothing
+
+    def judge(self, page: Page, ocr: dict[str, Any], png: str, out: str, dpi: int, again: str | None) -> gate.Verdict:
+        blocks = cast("list[dict[str, Any]]", cast("dict[str, Any]", ocr.get("layout") or {}).get("blocks") or [])
+        return gate.check_page(out, png, page.text or "", blocks, dpi, again)
+
+    def set_from_rows(
+        self,
+        page: Page,
+        ocr: dict[str, Any],
+        gray: gate.Gray,
+        png: str,
+        out: str,
+        dpi: int,
+        again: str | None,
+        first: gate.Verdict,
+    ) -> tuple[gate.Verdict, int, tuple[str, ...]]:
+        """(verdict, lines put right, why it failed even so) of a page that failed, set again from its OCR put right by its rows (rows.repair), with the layout read for
+        those lines. Kept only when it passes: a page the OCR read well can come out worse, and a failed page is its scan either way."""
+        fixed, n = rows.repair(ocr, gray, page.text or "", dpi)
+        model = settings.layout_model()
+        if not n or model is None or self.run_model is None:
+            return first, 0, ()
+        trial = out + ".rows.pdf"
+        try:
+            laid = layout.read_layout(png, fixed, model, dpi, self.run_model)
+            laid = layout.with_left_out(laid, layout.numbered(fixed, self.run_model))
+            fixed = dict(fixed, layout=layout.with_pictures(laid, fixed.get("pictures") or [], gray.shape))
+            self.set_in_type(page, fixed, png, trial, dpi)
+            verdict = self.judge(page, fixed, png, trial, dpi, again)
+        except layout.LayoutError as e:
+            log.warning("page %s: not set again from its rows: %s", page.id, e)
+            return first, 0, (str(e),)
+        else:
+            if not verdict.passed:
+                return first, 0, verdict.reasons
+            os.replace(trial, out)
+            return verdict, n, ()
+        finally:
+            files.remove(trial)
 
     def stage_export(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
         export.write_all(book_id, lambda d, t: self._progress(book_id, done=d, total=t))

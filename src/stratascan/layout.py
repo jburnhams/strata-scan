@@ -15,6 +15,7 @@ import json
 import os
 import re
 import tempfile
+from collections import Counter
 from collections.abc import Callable, Mapping
 from difflib import SequenceMatcher
 from typing import Any, cast
@@ -115,14 +116,17 @@ def rebuild_page(
     typed: str | None = None,
     run: RunFn = models_run,
     corrected: str | None = None,
+    was: Mapping[str, Any] | None = None,
 ) -> None:
     """The page set again as a PDF with real text at `out`, from its stored layout (`ocr["layout"]["groups"]`). `typed` is a person's text:
     it goes in as it stands, so a page whose typed lines are not the printed ones cannot be set line for line. `corrected` is the page's
-    corrected text, whose words put misread ones right (`with_corrected`)."""
+    corrected text, whose words put misread ones right (`with_corrected`). `was` is the OCR answer the layout was read from, when `ocr` is that answer tidied."""
     layout = cast("dict[str, Any]", ocr.get("layout") or {})
     groups = layout.get("groups")
     if not groups:
         raise LayoutError(str(layout.get("error") or "the page's layout has not been read: read the page again"))
+    if was is not None and (numbered(ocr, run).count("\n") != numbered(was, run).count("\n")):
+        ocr = dict(was, layout=layout)  # its lines are split otherwise, so the layout's numbers would be other lines'
     base = plain(ocr)
     context = numbered(ocr, run)
     if typed is None:
@@ -165,13 +169,18 @@ def with_corrected(texts: Mapping[str, Any], corrected: str, context: str) -> di
     which set on one of them ran off the page), and words the correction lacks (a running head) stay as they are."""
     nums = [(int(m[1]), m[2]) for m in (NUMBERED.match(x) for x in context.splitlines()) if m]
     fixed = {int(x["n"]): str(x["text"]) for x in cast("list[dict[str, Any]]", texts.get("lines") or [])}
-    lines = {n: fixed.get(n, t).split() for n, t in nums}
+    # a line the fix emptied is tried with the OCR's words: junk has no like in the text and stays empty, a page number does ("29" for 22)
+    emptied = {n: t.split() for n, t in nums if not fixed.get(n, t).strip()}
+    lines = {n: emptied.get(n) or fixed.get(n, t).split() for n, t in nums}
     where = [(n, k) for n, ws in lines.items() for k in range(len(ws))]
     old = [lines[n][k] for n, k in where]
     new = corrected.split()
     m = SequenceMatcher(None, [letters(w) for w in old], [letters(w) for w in new], autojunk=False)
     changed: set[int] = set()
+    found: Counter[int] = Counter()  # words of each line that the text has
     for op, i1, i2, j1, j2 in m.get_opcodes():
+        if op == "equal":
+            found.update(where[i][0] for i in range(i1, i2))
         if op != "replace":
             continue
         for b, k in enumerate(align(new[j1:j2], old[i1:i2])):  # alike words only, in order
@@ -182,9 +191,58 @@ def with_corrected(texts: Mapping[str, Any], corrected: str, context: str) -> di
             if not split:  # half of a word the print broke at a line end: the correction has it whole
                 lines[n][at] = new[j1 + b]
                 changed.add(n)
+                found[n] += 1
+    for n, ws in emptied.items():
+        if ws and found[n] >= len(ws):
+            changed.add(n)
+        else:
+            lines[n] = []
+            changed.discard(n)
+    read = {n: t.split() for n, t in nums}
+    for n, ws in lines.items():
+        # only in a line of capitals and small letters: a line of display capitals stays in capitals ("TOYS AND FANCY GOODS")
+        if len(ws) == len(read[n]) and sum(any(c.islower() for c in w) for w in ws) > len(ws) / 2:
+            for k, (was, now) in enumerate(zip(read[n], ws, strict=True)):
+                if small_capitals(was, now) != now:
+                    ws[k] = small_capitals(was, now)
+                    changed.add(n)
     for n in changed:
         fixed[n] = " ".join(lines[n])
     return {**texts, "lines": [{"n": n, "text": t} for n, t in sorted(fixed.items())]}
+
+
+def small_capitals(was: str, now: str) -> str:
+    """A name set in small capitals, as the OCR saw it (`was`, in capitals and small letters: "Puxca.—What") and as the correction gives it in
+    capitals ("PUNCH.—What"): capital and small letters, as elsewhere in the book, so it is not set half as wide again as its print."""
+    head = re.match(r"[^A-Za-z]*[A-Za-z]+", was)
+    if not head or not any(c.islower() for c in head[0]) or not any(c.isupper() for c in head[0]):
+        return now
+    return re.sub(r"[A-Z]{3,}", lambda m: m[0].capitalize(), now, count=1)
+
+
+def with_pictures(laid: dict[str, Any], boxes: list[list[int]], shape: tuple[int, ...]) -> dict[str, Any]:
+    """The layout with pictures in its figures (page-build cuts them from the scan; corners in thousandths of the page)."""
+    high, wide = shape[0], shape[1]
+    more = [
+        {
+            "kind": "ornament",
+            "box": [1000 * x / wide, 1000 * y / high, 1000 * (x + w) / wide, 1000 * (y + h) / high],
+        }
+        for x, y, w, h in boxes
+    ]
+    groups = cast("dict[str, Any]", laid["groups"])
+    return dict(laid, groups=dict(groups, figures=[*cast("list[Any]", groups.get("figures") or []), *more]))
+
+
+def with_left_out(laid: dict[str, Any], context: str) -> dict[str, Any]:
+    """The layout with the lines put on their rows (rows.repair: their block is 1000 or more) that its model put in no block: they are the page's
+    text, not junk it may leave out."""
+    groups = cast("dict[str, Any]", laid["groups"])
+    blocks = list(cast("list[dict[str, Any]]", groups.get("blocks") or []))
+    taken = {int(n) for b in blocks for n in cast("list[Any]", b.get("lines") or [])}
+    ours = [int(m[1]) for m in re.finditer(r"^(\d+) b(\d{4,}) ", context, re.M)]
+    blocks += [{"lines": [n], "role": "body"} for n in ours if n not in taken]
+    return dict(laid, groups=dict(groups, blocks=blocks))
 
 
 def same_word(old: str, new: str) -> bool:

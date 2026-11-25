@@ -4,6 +4,15 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-25
 
+**Pages the gate kept as scans go into type: lines the OCR missed put on their rows of ink, and fairer checks (branch `rows-from-ink`)**
+Jonathan: look at the pages that couldn't be processed, some seem fairly normal. Ten of the 1874 book's 25 set pages were scans. Tesseract had skipped whole lines of display type on the adverts ("PAPERHANGINGS", "STRAW GOODS"), though the corrected text had them, or boxed lines with the page's frame or a neighbouring row; page 10 failed on one slip of the second reader; page 7's overlaps were italics leaning on each other.
+
+- `rows.py` **new**: the rows of print found from the ink, paired in order with the corrected text's lines. `repair` puts a line the OCR missed or boxed badly on its row, word by word; `tidy` drops the frame read as a word ("|") and cuts boxes to their row, keeping the lines' numbers. A picture word (a pointing hand) is cut from the scan.
+- `pipeline.py`: a page that fails is set again from its repaired lines, with a layout read for them, and that is kept only when it passes (`lines_put_right`, and `from_rows`: why it failed even so). A first version repaired every page and made well-read dialogue pages worse.
+- `gate.py`: a word is lost when both readings have it and the page does not, or it stands in a run of two or more either has (`lost_words`); a letter's next neighbour must be covered by 60 % to count as overlapping; a picture character is no symbol to print; a line of one character is an ornament.
+- `layout.py`: names the OCR saw in small capitals stay so ("Polly", not "POLLY"), not in a line of display capitals; a line the line fix emptied is kept when the corrected text has its words (a page number); a tidied page whose lines are numbered otherwise is set from the one its layout was read from; lines put on their rows are never left out of the layout.
+- `tests/unit/test_rows.py` **new**, `test_gate.py`, `test_layout.py`, `test_pipeline.py`. Needs strata-models' branch `line-faces` for the adverts' faces.
+
 **Pages set in type draw the corrected text, and the gate sees wrong sizes and misreads (branch `rebuild-text-size`)**
 The first finished PDF of a whole book (44 pages, 17 of its 25 set pages passed) had pages the gate should not have passed: lines set too big, a headline's word set tiny, and names misread ("Juvpy", "PorrLy", "ccffin") though the page's stored text was right.
 
