@@ -50,7 +50,11 @@ jobs:
           esac
       - name: Tesseract is installed
         shell: bash
-        run: tesseract --version | head -1 && tesseract --list-langs | tr -d '\r' | tee /dev/stderr | grep -qx eng  # Windows prints CRLF
+        run: |
+          tesseract --version | head -1
+          langs=$(tesseract --list-langs 2>&1 | tr -d '\r')  # Windows prints CRLF
+          echo "$langs"
+          grep -qx eng <<<"$langs"
       - run: uv sync --locked
       - name: Lockfile, lint, format and types (once, on the newest Python)
         if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
