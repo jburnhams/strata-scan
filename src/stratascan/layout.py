@@ -234,15 +234,24 @@ def with_pictures(laid: dict[str, Any], boxes: list[list[int]], shape: tuple[int
     return dict(laid, groups=dict(groups, figures=[*cast("list[Any]", groups.get("figures") or []), *more]))
 
 
-def with_left_out(laid: dict[str, Any], context: str) -> dict[str, Any]:
+def with_left_out(laid: dict[str, Any], context: str, ocr: Mapping[str, Any]) -> dict[str, Any]:
     """The layout with the lines put on their rows (rows.repair: their block is 1000 or more) that its model put in no block: they are the page's
-    text, not junk it may leave out."""
+    text, not junk it may leave out. Their boxes join `blocks` too, which the gate looks at the ink of."""
     groups = cast("dict[str, Any]", laid["groups"])
     blocks = list(cast("list[dict[str, Any]]", groups.get("blocks") or []))
     taken = {int(n) for b in blocks for n in cast("list[Any]", b.get("lines") or [])}
     ours = [int(m[1]) for m in re.finditer(r"^(\d+) b(\d{4,}) ", context, re.M)]
-    blocks += [{"lines": [n], "role": "body"} for n in ours if n not in taken]
-    return dict(laid, groups=dict(groups, blocks=blocks))
+    new = [n for n in ours if n not in taken]
+    blocks += [{"lines": [n], "role": "body"} for n in new]
+    seen = [*cast("list[dict[str, Any]]", laid.get("blocks") or [])]
+    covered = [[float(v) for v in box] for b in seen for box in cast("list[list[float]]", b["lines"])]
+    for ln in cast("list[dict[str, Any]]", ocr.get("lines") or []):
+        box = [float(v) for v in ln["box"]]
+        if int(ln.get("block") or 0) >= 1000 and not any(
+            abs(box[0] - c[0]) < 9 and abs(box[1] - c[1]) < 9 for c in covered
+        ):
+            seen.append({"role": "body", "lines": [box]})
+    return dict(laid, groups=dict(groups, blocks=blocks), blocks=seen)
 
 
 def same_word(old: str, new: str) -> bool:

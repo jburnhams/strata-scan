@@ -553,7 +553,7 @@ class Runner:
         trial = out + ".rows.pdf"
         try:
             laid = layout.read_layout(png, fixed, model, dpi, self.run_model)
-            laid = layout.with_left_out(laid, layout.numbered(fixed, self.run_model))
+            laid = layout.with_left_out(laid, layout.numbered(fixed, self.run_model), fixed)
             fixed = dict(fixed, layout=layout.with_pictures(laid, fixed.get("pictures") or [], gray.shape))
             self.set_in_type(page, fixed, png, trial, dpi)
             verdict = self.judge(page, fixed, png, trial, dpi, again)

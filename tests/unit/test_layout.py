@@ -141,10 +141,22 @@ def test_a_line_the_fix_emptied_is_kept_when_the_text_has_it_and_names_in_small_
 
 
 def test_lines_put_on_their_rows_are_never_left_out_of_the_layout_and_pictures_join_its_figures():
-    laid = {"model": "m", "groups": {"blocks": [{"lines": [1], "role": "heading"}], "figures": [{"box": [0, 0, 9, 9]}]}}
+    laid = {
+        "model": "m",
+        "groups": {"blocks": [{"lines": [1], "role": "heading"}], "figures": [{"box": [0, 0, 9, 9]}]},
+        "blocks": [{"role": "heading", "lines": [[10, 20, 100, 30]]}],
+    }
+    ocr = {
+        "lines": [
+            {"text": "A", "box": [10, 20, 100, 30], "block": 1001},
+            {"text": "STRAW GOODS.", "box": [10, 90, 100, 30], "block": 1002},
+            {"text": "junk", "box": [10, 190, 100, 30], "block": 7},
+        ]
+    }
     context = "1 b1001 [0,0,1,1] A\n2 b1002 [0,0,1,1] STRAW GOODS.\n3 b7 [0,0,1,1] junk"
-    got = layout.with_left_out(laid, context)["groups"]["blocks"]
-    assert got == [{"lines": [1], "role": "heading"}, {"lines": [2], "role": "body"}]
+    got = layout.with_left_out(laid, context, ocr)
+    assert got["groups"]["blocks"] == [{"lines": [1], "role": "heading"}, {"lines": [2], "role": "body"}]
+    assert got["blocks"] == [laid["blocks"][0], {"role": "body", "lines": [[10.0, 90.0, 100.0, 30.0]]}]
     figures = layout.with_pictures(laid, [[100, 50, 20, 10]], (500, 1000))["groups"]["figures"]
     assert figures[1] == {"kind": "ornament", "box": [100.0, 100.0, 120.0, 120.0]}
 
