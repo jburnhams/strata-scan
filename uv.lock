@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -1400,7 +1400,7 @@ wheels = [
 
 [[package]]
 name = "strata-python"
-version = "0.2.13"
+version = "0.2.22"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
@@ -1409,9 +1409,9 @@ dependencies = [
     { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f3/8c/beb4fc324f879ac7b3300a0a9c98c9f039d79240a889b4a286c867a0da5e/strata_python-0.2.13.tar.gz", hash = "sha256:306344108bc8167e18c7cf9101fe40ebd7ed24f27bf0bf4bfa53bad7f43c9fa6", size = 252698, upload-time = "2026-11-24T06:36:03.562Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/eb/d82beae14b4da33c2767499209ac389f620687464bd204a949814fe48342/strata_python-0.2.22.tar.gz", hash = "sha256:4d49a524cf8f7b26843adbf330888ec702a30aca5be825eb3fcdaf76e7eb87e4", size = 319413, upload-time = "2026-11-25T20:10:19.222Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/56/8e/12d05ce5c47fef882017827002908f48bac500aabb31f1c3bab4debdd5e9/strata_python-0.2.13-py3-none-any.whl", hash = "sha256:797d5ac7df48d8f9966d7b970d8d37df407966d62a13b819efec3cf9c863cc24", size = 178377, upload-time = "2026-11-24T06:36:01.909Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/bd/eeec31a1f48962d08292cf5101fe899921a8a0531a6af293c1c8b5eaf403/strata_python-0.2.22-py3-none-any.whl", hash = "sha256:fa23b4363bedcc63c2a5e11648d1d0d05611d68c6277e706c99ddbacf16f1037", size = 224942, upload-time = "2026-11-25T20:10:17.91Z" },
 ]
 
 [package.optional-dependencies]
@@ -1462,7 +1462,7 @@ requires-dist = [
     { name = "pypdf", specifier = ">=7.1.0" },
     { name = "pypdfium2", specifier = ">=5.15.2" },
     { name = "python-multipart", specifier = ">=0.0.33" },
-    { name = "strata-python", extras = ["db"], specifier = ">=0.2.13,<0.3" },
+    { name = "strata-python", extras = ["db"], specifier = ">=0.2.22,<0.3" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 
