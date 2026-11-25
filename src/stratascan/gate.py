@@ -16,8 +16,8 @@ numbers, they were chosen knowing which of those pages looked right):
     size     no line of a block of text is set more than SIZE times its block's size, and no words that stand on one line differ more than ROW
              in size: a line whose size was fitted wrong (a tall neighbour's descender boxed with it), or a headline's word set small
 
-The words are checked against a second reading of the page by another route (a vision-language model on the picture, pipeline), not the reading
-the rebuild drew from: a line that reading never found, or a misread it made, is otherwise compared with itself.
+The words are checked against the page's text and, when there is one, a second reading by another route (a vision-language model on the
+picture, pipeline), whichever is worse: a line the text's reading never found, or a misread it made, is otherwise compared with itself.
 
 A check that could not be made (a PDF that will not open) is a failure with the reason, never a pass."""
 
@@ -303,8 +303,11 @@ def text_ink(pdf: str, png: str, blocks: list[dict[str, Any]], dpi: float) -> fl
     return ink_f1(ink_of(gray, dpi), got, max(1, round(dpi / 250)), where)
 
 
-def check_page(pdf: str, png: str, text: str, blocks: list[dict[str, Any]], dpi: float) -> Verdict:
-    """The page's verdict. `text` is its corrected (or typed) text, `blocks` its layout's (layout.read_layout)."""
+def check_page(
+    pdf: str, png: str, text: str, blocks: list[dict[str, Any]], dpi: float, reading: str | None = None
+) -> Verdict:
+    """The page's verdict. `text` is its corrected (or typed) text, `blocks` its layout's (layout.read_layout), `reading` the second reading:
+    the words must be in the page by both, so neither a reading that stopped short nor a line the first one missed can pass it."""
     if not words(text):
         return Verdict(0.0, 0.0, 0, 0.0, (), ("the page has no words to check it by",))
     try:
@@ -313,7 +316,7 @@ def check_page(pdf: str, png: str, text: str, blocks: list[dict[str, Any]], dpi:
         sized = wrong_sizes(pdf, blocks, scan_width(png)) + mixed_rows(pdf)
     except Exception as e:
         return Verdict(1.0, 0.0, 0, 0.0, (), (f"the rebuilt page could not be checked ({type(e).__name__}: {e})",))
-    lost = lost_words(text, drawn)
+    lost = max(lost_words(t, drawn) for t in (text, reading or text))
     over = overlapping(boxes) / max(1, len(boxes))
     off = sum(1 for x0, y0, x1, y1 in boxes if x0 < 0 or y0 < 0 or x1 > wide or y1 > high)
     missing = tuple(sorted((symbols(text) - (symbols(drawn) - blank)).elements()))

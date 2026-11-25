@@ -115,3 +115,13 @@ def test_a_line_set_too_big_for_its_block_and_a_word_set_small_beside_its_neighb
 def test_a_scan_that_will_not_open_has_no_width(tmp_path):
     with pytest.raises(ValueError, match="could not be read"):
         gate.scan_width(str(tmp_path / "no.png"))
+
+
+def test_the_words_must_be_there_by_both_readings(tmp_path):
+    png = scan_png(tmp_path / "s.png", text_pdf(tmp_path / "s.pdf", LINES))
+    short = text_pdf(tmp_path / "short.pdf", LINES[:3])
+    by_text = gate.check_page(short, png, TEXT, blocks_of(LINES), DPI)
+    stopped = gate.check_page(short, png, TEXT, blocks_of(LINES), DPI, "\n".join(t for _, _, t in LINES[:3]))
+    assert stopped.words_lost == by_text.words_lost > gate.LOST
+    missed = gate.check_page(short, png, "\n".join(t for _, _, t in LINES[:3]), blocks_of(LINES), DPI, TEXT)
+    assert missed.words_lost == by_text.words_lost
