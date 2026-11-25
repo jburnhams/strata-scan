@@ -125,3 +125,27 @@ def test_the_words_must_be_there_by_both_readings(tmp_path):
     assert stopped.words_lost == by_text.words_lost > gate.LOST
     missed = gate.check_page(short, png, "\n".join(t for _, _, t in LINES[:3]), blocks_of(LINES), DPI, TEXT)
     assert missed.words_lost == by_text.words_lost
+
+
+def test_one_readings_lone_misreading_is_not_a_lost_word_and_a_word_both_have_is(tmp_path):
+    drawn = "there are said to be one hundred rooms in my house and we had ninety"
+    assert gate.lost_words(drawn, drawn, drawn.replace("rooms", "reccms"))[0] == 0.0
+    share, gone = gate.lost_words(drawn + " thousand", drawn, drawn + " thousand")
+    assert gone == {"thousand": 1}
+    assert share == pytest.approx(1 / 16)
+    assert gate.lost_words(drawn, drawn, drawn + " STRAW GOODS")[1] == {
+        "straw": 1,
+        "goods": 1,
+    }  # a line one reading has
+    assert gate.words("ONE LINE\n——o——\n24") == {"one": 1, "line": 1, "24": 1}
+
+
+def test_a_letter_leaning_over_its_neighbour_is_no_overlap_and_one_on_another_line_is():
+    f, o = (0.0, 0.0, 10.0, 20.0), (6.0, 5.0, 14.0, 15.0)  # an italic f over an o: 40 % of the o
+    assert gate.overlapping([f, o]) == 0
+    assert gate.overlapping([f, (100.0, 0.0, 110.0, 10.0), o]) == 1
+    assert gate.overlapping([f, (1.0, 1.0, 9.0, 19.0)]) == 1
+
+
+def test_a_pointing_hand_is_no_symbol_to_print():
+    assert gate.symbols("\u261e MAGIC LANTERNS \u2020") == {"\u2020": 1}

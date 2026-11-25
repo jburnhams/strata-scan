@@ -17,13 +17,15 @@ numbers, they were chosen knowing which of those pages looked right):
              in size: a line whose size was fitted wrong (a tall neighbour's descender boxed with it), or a headline's word set small
 
 The words are checked against the page's text and, when there is one, a second reading by another route (a vision-language model on the
-picture, pipeline), whichever is worse: a line the text's reading never found, or a misread it made, is otherwise compared with itself.
+picture, pipeline): what both have, and any line either has (`lost_words`).
 
 A check that could not be made (a PDF that will not open) is a failure with the reason, never a pass."""
 
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any, cast
 
 import cv2
@@ -77,18 +79,50 @@ def unbroken(text: str) -> str:
     return re.sub(r"[-­￾][ \t]*\r?\n[ \t]*|[­￾]", "", text.replace("\u2019", "'"))
 
 
+def word_list(text: str) -> list[str]:
+    """The text's words in order; a line of one letter or figure is an ornament read as type ("——o——")."""
+    lines = [ln for ln in unbroken(text).splitlines() if sum(c.isalnum() for c in ln) > 1]
+    return re.findall(r"[^\W_]+", "\n".join(lines).lower())
+
+
 def words(text: str) -> Counter[str]:
-    return Counter(re.findall(r"[^\W_]+", unbroken(text).lower()))
+    return Counter(word_list(text))
 
 
 def symbols(text: str) -> Counter[str]:
-    return Counter(c for c in text if not c.isspace() and not c.isalnum() and c not in LOOSE and c != "￾")
+    """The text's symbols; not a picture (a pointing hand), which no text face has and the rebuild cuts from the scan (rows.picture_mark)."""
+    found = [c for c in text if not c.isspace() and not c.isalnum() and c not in LOOSE and c != "\ufffe"]
+    return Counter(c for c in found if unicodedata.category(c) != "So")
 
 
-def lost_words(text: str, drawn: str) -> float:
-    """The share of `text`'s words that `drawn` lacks (each counted as often as it stands)."""
-    want = words(text)
-    return sum((want - words(drawn)).values()) / max(1, sum(want.values()))
+def missing(text: str, drawn: str) -> tuple[Counter[str], Counter[str]]:
+    """(the words of `text` that `drawn` lacks, each as often as it lacks them; those of them that stand two or more together)."""
+    want, have = word_list(text), word_list(drawn)
+    lack = Counter(want) - Counter(have)
+    met: set[int] = set()
+    for a, _, n in SequenceMatcher(None, want, have, autojunk=False).get_matching_blocks():
+        met.update(range(a, a + n))
+    left, at = Counter(lack), list[int]()
+    for i, w in enumerate(want):
+        if i not in met and left[w] > 0:
+            left[w] -= 1
+            at.append(i)
+    together = Counter(
+        want[i] for k, i in enumerate(at) if i - 1 in at[max(0, k - 1) : k] or i + 1 in at[k + 1 : k + 2]
+    )
+    return lack, together
+
+
+def lost_words(text: str, drawn: str, reading: str | None = None) -> tuple[float, Counter[str]]:
+    """(the share of the words `drawn` lacks, the words). With a second `reading`, a word counts when both readings have it and the page does
+    not, or when it stands in a run either has and the page lacks (a line or more): one reading's lone misreading ("reccms" for rooms) is not
+    the page's fault, and no reading can relax what the other saw (a reading that stopped short, a line one of them missed)."""
+    lack, together = missing(text, drawn)
+    if reading is None:
+        return sum(lack.values()) / max(1, sum(words(text).values())), lack
+    lack2, together2 = missing(reading, drawn)
+    lost = (lack & lack2) | together | together2
+    return sum(lost.values()) / max(1, sum(words(text).values()), sum(words(reading).values())), lost
 
 
 SCALE = 4.0  # pixels a point the symbols are looked at: 288 dpi
@@ -226,7 +260,8 @@ def mixed_rows(pdf: str) -> list[str]:
 
 
 def overlapping(boxes: list[tuple[float, float, float, float]]) -> int:
-    """How many characters lie on a later one, over 30 % of the smaller (a kerned pair touches by less). A pair counts once."""
+    """How many characters lie on a later one, over 30 % of the smaller; a character's next neighbour must cover 60 %, since an italic f leans
+    over the letter beside it and a stop stands under it (2026-11-25: 1.4 % of a page of italics). A pair counts once."""
     if len(boxes) < 2:
         return 0
     a = np.asarray(boxes, dtype=np.float64)
@@ -236,8 +271,8 @@ def overlapping(boxes: list[tuple[float, float, float, float]]) -> int:
         rest = a[i + 1 :]
         w = np.minimum(a[i, 2], rest[:, 2]) - np.maximum(a[i, 0], rest[:, 0])
         h = np.minimum(a[i, 3], rest[:, 3]) - np.maximum(a[i, 1], rest[:, 1])
-        shared = np.maximum(w, 0) * np.maximum(h, 0)
-        n += bool((shared > 0.3 * np.minimum(area[i + 1 :], area[i])).any())
+        shared = np.maximum(w, 0) * np.maximum(h, 0) / np.maximum(np.minimum(area[i + 1 :], area[i]), 1e-9)
+        n += bool(shared[0] > 0.6 or (shared[1:] > 0.3).any())
     return n
 
 
@@ -316,13 +351,13 @@ def check_page(
         sized = wrong_sizes(pdf, blocks, scan_width(png)) + mixed_rows(pdf)
     except Exception as e:
         return Verdict(1.0, 0.0, 0, 0.0, (), (f"the rebuilt page could not be checked ({type(e).__name__}: {e})",))
-    lost = max(lost_words(t, drawn) for t in (text, reading or text))
+    lost, gone = lost_words(text, drawn, reading)
     over = overlapping(boxes) / max(1, len(boxes))
     off = sum(1 for x0, y0, x1, y1 in boxes if x0 < 0 or y0 < 0 or x1 > wide or y1 > high)
     missing = tuple(sorted((symbols(text) - (symbols(drawn) - blank)).elements()))
     reasons: list[str] = []
     if lost > LOST:
-        reasons.append(f"{lost:.1%} of the words are missing")
+        reasons.append(f"{lost:.1%} of the words are missing: " + " ".join(sorted(gone.elements())[:8]))
     if over > OVERLAP:
         reasons.append(f"{over:.1%} of the characters lie over others")
     if off:

@@ -353,13 +353,59 @@ def test_the_finished_pdf_has_the_pages_that_pass_and_the_scans_of_those_that_do
     assert order[0] == worst.id
     by_id = {p.id: p for p in pages_of(b)}
     assert by_id[worst.id].ocr["gate"]["passed"] is False
-    assert "100.0% of the words are missing" in by_id[worst.id].ocr["gate"]["reasons"]
+    assert by_id[worst.id].ocr["gate"]["reasons"][0].startswith("100.0% of the words are missing")
     assert export.stands(b, by_id[worst.id]) is False
     good = [by_id[p.id] for p in texts if p.id != worst.id]
     assert [(p.ocr["gate"]["reasons"], export.stands(b, p)) for p in good] == [([], True)] * len(good)
     finished = PdfReader(files.export(b, "book-rebuilt.pdf")).pages
     assert len(finished) == len([p for p in by_id.values() if p.kind != "skip"])
     assert all(p.mediabox.width != 100 for p in finished)  # the stand-in's blank 100-point page is not among them
+
+
+def test_a_page_that_fails_is_set_again_from_its_rows_and_kept_only_when_it_passes(make_book, fake_models):
+    """The reader misses a line of every page that the corrected text has. The first setting of every page lacks its words; the second, of the
+    lines put on their rows, is the page as Tesseract's own PDF of it, but for one page whose second setting lacks them too."""
+    from books import tesseract_ocr
+
+    missed: dict[str, str] = {}
+
+    def misses_a_line(path, pdf, lang, dpi):
+        got = tesseract_ocr(path, pdf, lang, dpi)
+        if len(got["lines"]) > 5:
+            missed[path] = "\n".join(ln["text"] for ln in got["lines"])
+            got["lines"] = got["lines"][:3] + got["lines"][4:]
+        return got
+
+    def correct(path, text, model):
+        return missed.get(path, text)
+
+    answers = models_answers(fake_models)
+    fake_models.results = answers
+    r = pipeline.Runner(ocr=misses_a_line, correct=correct, reread=None, run_model=layout.models_run)
+    b = make_book()
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"] and len(p.text.splitlines()) > 5]
+    assert len(texts) > 1
+    bad = texts[0].id
+    draw = answers["page-build"]
+
+    def page_build(params):
+        got = draw(params)
+        out = os.path.basename(params.get("out", ""))
+        pid = int(out.split(".")[0]) if params.get("font_fit") else 0
+        if pid and (out.endswith(".rows.pdf") and pid != bad):
+            shutil.copyfile(files.ocr_pdf(b, pid), params["out"])
+        return got
+
+    fake_models.results = {**answers, "page-build": page_build}
+    r.run(pipeline.Task(b, ("rebuild",)))
+    by_id = {p.id: p for p in pages_of(b)}
+    for p in texts:
+        g = by_id[p.id].ocr["gate"]
+        assert g["passed"] is (p.id != bad)
+        assert g["lines_put_right"] == (0 if p.id == bad else 1)
+        assert bool(g["from_rows"]) is (p.id == bad)
+        assert not os.path.exists(files.rebuilt_pdf(b, p.id) + ".rows.pdf")
 
 
 def test_a_layout_that_fails_leaves_the_page_read_and_says_why(make_book, fake_models):

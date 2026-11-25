@@ -103,7 +103,7 @@ def test_misread_words_are_put_right_from_the_corrected_text_and_the_lines_stay_
     # the correction joins its lines, joins the split word and leaves the running head out
     corrected = "POLLY.—I don't know. She repeats the letters to Punch and he"
     assert layout.with_corrected(fixed, corrected, context) == {
-        "lines": [{"n": 2, "text": "POLLY.—I don't know."}, {"n": 4, "text": "ters to Punch and he"}],
+        "lines": [{"n": 2, "text": "Polly.—I don't know."}, {"n": 4, "text": "ters to Punch and he"}],
         "note": 1,
     }
     assert layout.with_corrected({}, "", context) == {"lines": []}
@@ -128,3 +128,46 @@ def test_what_the_service_says_is_said_in_words(monkeypatch, fake_models):
     monkeypatch.setenv("STRATA_MODELS_URL", "http://127.0.0.1:9")
     with pytest.raises(layout.LayoutError, match="not running"):
         layout.models_run("font-match", {}, None)
+
+
+def test_a_line_the_fix_emptied_is_kept_when_the_text_has_it_and_names_in_small_capitals_stay_so():
+    context = "1 b1 [0,0,1,1] 29\n2 b1 [0,0,1,1] ADVERTISEMENTS.\n3 b2 [0,0,1,1] |\n4 b2 [0,0,1,1] Puxca.—What does"
+    fixed = {"lines": [{"n": 1, "text": ""}, {"n": 3, "text": ""}, {"n": 4, "text": "PUNCH.—What does"}]}
+    got = layout.with_corrected(fixed, "22\nADVERTISEMENTS.\nPUNCH.—What does", context)["lines"]
+    assert {x["n"]: x["text"] for x in got} == {1: "22", 3: "", 4: "Punch.—What does"}
+    assert layout.small_capitals("GOODS", "GOODS") == "GOODS"
+    display = layout.with_corrected({}, "TOYS AND FANCY GOODS", "1 b1 [0,0,1,1] TOI AND EASCY Goons")["lines"]
+    assert display == [{"n": 1, "text": "TOYS AND FANCY GOODS"}]
+
+
+def test_lines_put_on_their_rows_are_never_left_out_of_the_layout_and_pictures_join_its_figures():
+    laid = {
+        "model": "m",
+        "groups": {"blocks": [{"lines": [1], "role": "heading"}], "figures": [{"box": [0, 0, 9, 9]}]},
+        "blocks": [{"role": "heading", "lines": [[10, 20, 100, 30]]}],
+    }
+    ocr = {
+        "lines": [
+            {"text": "A", "box": [10, 20, 100, 30], "block": 1001},
+            {"text": "STRAW GOODS.", "box": [10, 90, 100, 30], "block": 1002},
+            {"text": "junk", "box": [10, 190, 100, 30], "block": 7},
+        ]
+    }
+    context = "1 b1001 [0,0,1,1] A\n2 b1002 [0,0,1,1] STRAW GOODS.\n3 b7 [0,0,1,1] junk"
+    got = layout.with_left_out(laid, context, ocr)
+    assert got["groups"]["blocks"] == [{"lines": [1], "role": "heading"}, {"lines": [2], "role": "body"}]
+    assert got["blocks"] == [laid["blocks"][0], {"role": "body", "lines": [[10.0, 90.0, 100.0, 30.0]]}]
+    figures = layout.with_pictures(laid, [[100, 50, 20, 10]], (500, 1000))["groups"]["figures"]
+    assert figures[1] == {"kind": "ornament", "box": [100.0, 100.0, 120.0, 120.0]}
+
+
+def test_a_tidied_page_whose_lines_are_numbered_otherwise_is_set_from_the_one_its_layout_was_read_from():
+    def build(params):
+        if params.get("list_lines"):
+            return {"text": "\n".join(f"{n} b1 [0,0,1,1] x" for n, _ in enumerate(params["ocr"]["lines"]))}
+        return {}
+
+    run = run_with(**{"page-build": build, "font-match": {}, "vision-language": {"json": {"lines": []}}})
+    was = {**OCR, "lines": OCR["lines"] * 2, "layout": {"groups": {"a": 1}}}
+    layout.rebuild_page("/p.png", {**OCR, "layout": {"groups": {"a": 1}}}, "/o.pdf", 300, None, run, "", was)
+    assert len(run.calls[-1][1]["ocr"]["lines"]) == 2
