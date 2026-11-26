@@ -453,7 +453,15 @@ def models_answers(service):
     def page_build(params):
         ocr = params["ocr"]
         if params.get("list_lines"):
-            rows = [f"{n} b1 [0,0,9,9] {ln['text']}" for n, ln in enumerate(ocr["lines"], 1)]
+            w, h = float(ocr["width"]), float(ocr["height"])
+
+            def k(b):  # the line's box in thousandths of the page, as the real page-build lists it
+                return ",".join(
+                    str(round(v))
+                    for v in (b[0] * 1000 / w, b[1] * 1000 / h, (b[0] + b[2]) * 1000 / w, (b[1] + b[3]) * 1000 / h)
+                )
+
+            rows = [f"{n} b1 [{k(ln['box'])}] {ln['text']}" for n, ln in enumerate(ocr["lines"], 1)]
             return {"text": "\n".join(rows)}
         out = params["out"]
         with open(out, "wb") as f:
@@ -493,3 +501,38 @@ def test_a_reading_held_between_the_passes_keeps_no_image():
         "prompt",
         "prompt_error",
     }
+
+
+def test_a_books_plain_pages_share_the_font_shortlist_of_its_first_ones(make_book, fake_models):
+    """Pages laid out from their own lines are plain: the first SAMPLE ask for a shortlist, the rest are given the faces those named most."""
+    from books import tesseract_ocr
+
+    answers = models_answers(fake_models)
+    fake_models.results = answers
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
+    from books import page
+
+    lines = [f"line {i} of the plain running text of a page" for i in range(14)]
+    b = make_book(scans=[page(lines) for _ in range(5)])
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    texts = [p for p in pages_of(b) if p.kind == "text"]
+    assert len(texts) >= 4
+    assert all(p.ocr["layout"]["model"] == layout.PLAIN for p in texts)
+    assert not [
+        j
+        for j in fake_models.jobs
+        if j["role"] == "vision-language" and j["params"].get("preset") == "page-layout-fix-v2"
+    ]
+    named = iter([["caslon", "bodoni"], ["caslon", "baskerville"], ["caslon", "bodoni"]])
+    asked = []
+
+    def fit(params):
+        asked.append(params.get("candidates"))
+        return {"face": "tinos", "blocks": [], "fonts": {}, "proposed": params.get("candidates") or next(named)}
+
+    fake_models.results = {**answers, "font-match": fit}
+    r.run(pipeline.Task(b, ("rebuild",)))
+    assert asked[: pipeline.SAMPLE] == [None] * pipeline.SAMPLE
+    assert all(a == ["caslon", "bodoni", "baskerville"] for a in asked[pipeline.SAMPLE :])
+    kinds = [p.ocr["type"]["asked"] for p in pages_of(b) if p.kind == "text"]
+    assert kinds.count(True) == pipeline.SAMPLE
