@@ -4,6 +4,11 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-26
 
+**A patterned leaf stays within its page crop (branch `pattern-crop`)**
+Review of PR 19: a marbled endpaper on one side of a two-page scan was cut from the whole scan, bringing the other page with it.
+- `pipeline.py` `rebuild_picture`: only a cover or the book photographed is cut from its whole scan; a pattern keeps its page crop. `book_in` does nothing for one side of a spread.
+- `tests/unit/test_pipeline.py`.
+
 **Handwriting and bookplates kept on white, covers trimmed to the book, and pages already made not made again (branch `keep-marks`)**
 Jonathan: keep what is on the near-empty pages (endpapers with a bookplate, an owner's name, pencilled notes; photographs of the spine and edges), cropped to the edge of the page or book, ideally the handwriting alone on white; err on the side of keeping content; use the paper colour seen on text pages to take it out. And: most pages don't need redoing, so don't redo them.
 - **new** `marks.py`: `lift` takes the paper out of a page twice: its tone (each pixel over the lightest paper near it) and its colour (`paper_hue`, from the book's fullest text pages: a mark in the paper's own hue that is more colour than dark is a stain or foxing). What is left, marks with a dark seed and their faint strokes, in clusters that span a word, is kept on white; a lone speck and the leaf's edge are not. `backdrop` and `book_box` find the book in a photograph of it (a scan with a plain edge); `dark` tells a page that is the book photographed (cloth, a spine) from a leaf.

@@ -722,16 +722,16 @@ class Runner:
         if page.kind == "blank":
             boxes = []  # what the page finder saw on a blank page is show-through and specks; a mark on it is lifted below
         if page.kind == "cover" or (not boxes and marks.dark(png)):
-            made["whole"] = True  # the book photographed: a cover, its spine, its edges
+            made["whole"] = made["book"] = True  # the book photographed: a cover, its spine, its edges
         elif not boxes:
             lifted = marks.lift(png, self.paper_hue(page.book_id))
             if lifted.share > marks.PATTERN:
-                made["whole"] = True
+                made["whole"] = True  # a pattern: the leaf as its page crop has it, one side of a spread (review)
             elif lifted.box is not None:
                 cut = marks.save(lifted, os.path.join(crops, f"{page.id}.marks.png"))
                 boxes, made["marks"] = [lifted.box], cut
         if made.get("whole"):
-            book = self.book_in(page, os.path.join(crops, f"{page.id}.book.png"))
+            book = self.book_in(page, os.path.join(crops, f"{page.id}.book.png")) if made.get("book") else None
             if book is not None:  # the page as the book photographed, whatever its crop took in
                 png = book
                 high, wide = read_image(png).shape[:2]
@@ -778,8 +778,8 @@ class Runner:
         with store.session() as s:
             scan = s.get(Scan, page.scan_id)
             src = os.path.join(files.book_dir(page.book_id), scan.file) if scan is not None else None
-        if src is None or not os.path.isfile(src):
-            return None
+        if src is None or not os.path.isfile(src) or page.side != "single":
+            return None  # one side of a spread: the whole scan would bring its other page with it
         scan_img = read_image(src)
         behind = marks.backdrop(scan_img)
         if behind is None:
