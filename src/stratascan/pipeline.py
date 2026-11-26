@@ -26,6 +26,7 @@ boxes stay, and the result keeps both texts (`ocr["corrected"]`). Its layout is 
 The OCR and correction functions are parameters (`Runner(ocr=..., correct=...)`) only so the strata-models service can be stood in for: by
 default they are the client."""
 
+import json
 import logging
 import os
 import threading
@@ -39,10 +40,10 @@ from typing import Any, cast
 
 import cv2
 import numpy as np
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from strata_python.clients import models as sm
 
-from stratascan import ahead, export, figures, files, gate, geometry, layout, rows, settings, sources, store
+from stratascan import ahead, export, figures, files, gate, geometry, layout, marks, rows, settings, sources, store
 from stratascan.db.models import Book, Figure, Page, Scan
 
 log = logging.getLogger("stratascan")
@@ -176,6 +177,7 @@ class Runner:
         self._busy = False
         self._stop = False
         self._thread: threading.Thread | None = None
+        self._paper: dict[int, float | None] = {}  # each book's paper colour (paper_hue), once per run of the server
 
     # -- the queue ---------------------------------------------------------------------------------------------------------------------
 
@@ -617,6 +619,12 @@ class Runner:
             if pages is not None:
                 q = q.where(Page.id.in_(pages))
             todo = list(s.scalars(q.order_by(Page.position)))
+        if pages is None:
+            # a page already made as it would be made now is kept: its type fit cost minutes and its layout cents (Jonathan, 2026-11-26:
+            # "we should be smart enough to not redo stuff"). Pages named are made again whatever they hold.
+            todo = [p for p in todo if not made(p)]
+            if not todo:
+                return
         # the worst read first (stable, so reading order among equals): whoever looks while it runs sees the pages most likely to fail the gate
         todo.sort(key=lambda p: p.ocr_conf if p.ocr_conf is not None else 100.0)
         if not todo:
@@ -681,7 +689,7 @@ class Runner:
                 }
                 # a new dict: SQLAlchemy does not see a JSON column change in place. `type`: the font shortlist this page was set with
                 kept = {"faces": used, "plain": plain, "asked": faces is None}
-                p.ocr = dict(p.ocr, gate=record, type=kept)
+                p.ocr = dict(p.ocr, gate=dict(record, kind=page.kind), type=kept)
 
     def figures_in_thousandths(self, page: Page, shape: tuple[int, ...]) -> list[dict[str, Any]]:
         """The page's pictures as a layout names them: boxes [x0, y0, x1, y1] in thousandths of the page."""
@@ -697,34 +705,111 @@ class Runner:
         ]
 
     def rebuild_picture(self, page: Page) -> None:
-        """A page with no text to set (`typeset`): its pictures cut from the scan onto clean paper, or the whole page when it is a cover or a
-        pattern (marbled paper: mostly ink), or a true blank of its size when it holds neither (layout.picture_page). No gate: no text to check."""
+        """A page with no text to set (`typeset`). A cover is the book photographed: kept whole, trimmed to the book (marks.book_box). Its
+        pictures cut from the scan onto clean paper. Otherwise what is on its paper, lifted onto white (marks.lift: handwriting, a bookplate,
+        a shelf mark; Jonathan, 2026-11-26: err on the side of keeping content), or kept whole when that is most of the page (a pattern:
+        marbled paper), or a true blank when there is nothing (layout.picture_page). No gate: no text to check."""
         png = files.page_png(page.book_id, page.id)
         if not os.path.isfile(png):
             render(page)
         with store.session() as s:
             boxes = [(f.x, f.y, f.w, f.h) for f in s.scalars(select(Figure).where(Figure.page_id == page.id))]
-        whole = page.kind == "cover" or (page.kind != "blank" and not boxes and layout.inked_share(png) > layout.INKED)
-        if whole:
-            from PIL import Image
-
-            with Image.open(png) as im:
-                boxes = [(0, 0, im.width, im.height)]
-        elif page.kind == "blank":
-            boxes = []  # what the page finder saw on a blank page is show-through and specks
+        crops = os.path.dirname(files.path(page.book_id, "crops", "x"))
+        os.makedirs(crops, exist_ok=True)
         out = files.rebuilt_pdf(page.book_id, page.id)
+        high, wide = read_image(png).shape[:2]
+        made: dict[str, Any] = {}
+        if page.kind == "blank":
+            boxes = []  # what the page finder saw on a blank page is show-through and specks; a mark on it is lifted below
+        if page.kind == "cover" or (not boxes and marks.dark(png)):
+            made["whole"] = True  # the book photographed: a cover, its spine, its edges
+        elif not boxes:
+            lifted = marks.lift(png, self.paper_hue(page.book_id))
+            if lifted.share > marks.PATTERN:
+                made["whole"] = True
+            elif lifted.box is not None:
+                cut = marks.save(lifted, os.path.join(crops, f"{page.id}.marks.png"))
+                boxes, made["marks"] = [lifted.box], cut
+        if made.get("whole"):
+            book = self.book_in(page, os.path.join(crops, f"{page.id}.book.png"))
+            if book is not None:  # the page as the book photographed, whatever its crop took in
+                png = book
+                high, wide = read_image(png).shape[:2]
+            boxes = [(0, 0, wide, high)]
         try:
-            crops = os.path.dirname(files.path(page.book_id, "crops", "x"))
-            layout.picture_page(png, boxes, out, scan_dpi(page), self.run_model or layout.models_run, crops)
+            run = self.run_model or layout.models_run
+            images = [made["marks"]] if "marks" in made else None
+            layout.picture_page(
+                png,
+                boxes,
+                out,
+                scan_dpi(page),
+                run,
+                crops,
+                images=images,
+                rules="marks" not in made and not made.get("whole"),
+                whole=bool(made.get("whole")),
+            )
         except layout.LayoutError as e:
             files.remove(out)
             raise StageError(str(e)) from e
+        verdict: dict[str, Any] = {
+            "passed": True,
+            "reasons": [],
+            "picture": bool(boxes),
+            "whole": bool(made.get("whole")),
+            "marks": "marks" in made,
+            "kind": page.kind,
+            "way": PICTURES,
+        }
+        with open(out + ".json", "w", encoding="utf-8") as f:  # how it was made, read or not (made)
+            json.dump(verdict, f)
         with store.session() as s:
             p = s.get(Page, page.id)
             if (
                 p is not None and p.ocr is not None
             ):  # a page never read stays unread: its first reading guesses its kind (review)
-                p.ocr = dict(p.ocr, gate={"passed": True, "reasons": [], "picture": bool(boxes), "whole": whole})
+                p.ocr = dict(p.ocr, gate=verdict)
+
+    def book_in(self, page: Page, out: str) -> str | None:
+        """The book cut from the page's whole scan (turned by its angle), trimmed of the backdrop it lies on (marks.book_box), written to
+        `out`; None when the scan has no plain backdrop round it. The whole scan, not the page's crop: a crop found for a leaf can cut into
+        a photograph of the spine or the edges, or take in all of the backdrop."""
+        with store.session() as s:
+            scan = s.get(Scan, page.scan_id)
+            src = os.path.join(files.book_dir(page.book_id), scan.file) if scan is not None else None
+        if src is None or not os.path.isfile(src):
+            return None
+        scan_img = read_image(src)
+        behind = marks.backdrop(scan_img)
+        if behind is None:
+            return None
+        fill = (
+            int(behind[0]),
+            int(behind[1]),
+            int(behind[2]),
+        )  # the corners a turn opens filled with the backdrop, not white
+        whole = geometry.rotate(scan_img, page.angle, fill)
+        box = marks.book_box(whole, behind)
+        if box is None:
+            return None
+        x, y, w, h = box
+        cv2.imwrite(out, whole[y : y + h, x : x + w])
+        return out
+
+    def paper_hue(self, book_id: int) -> float | None:
+        """The book's paper colour (marks.paper_hue), from its fullest text pages: mostly paper, as no blank page is sure to be."""
+        if book_id not in self._paper:
+            with store.session() as s:
+                q = (
+                    select(Page.id)
+                    .where(Page.book_id == book_id, Page.kind == "text")
+                    .order_by(func.length(Page.text).desc())
+                    .limit(5)
+                )
+                ids = list(s.scalars(q))
+            self._paper[book_id] = marks.paper_hue(files.page_png(book_id, i) for i in ids)
+        return self._paper[book_id]
 
     def tidied(self, page: Page, png: str) -> tuple[gate.Gray, dict[str, Any]]:
         """(the page in grey, its OCR tidied by its rows of ink: rows.tidy), as it is set."""
@@ -847,6 +932,27 @@ class Runner:
 
     def stage_export(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
         export.write_all(book_id, lambda d, t: self._progress(book_id, done=d, total=t))
+
+
+PICTURES = (
+    2  # how a page with no text is made (rebuild_picture); 2: marks lifted off the paper, covers trimmed to the book
+)
+
+
+def made(page: Page) -> bool:
+    """Whether the page's rebuilt PDF is the one the rebuild would make now: a text page set and passed by the gate; any other page made the
+    current way (PICTURES). Either as the kind it is now: a page whose kind a person changed is made again. Editing its text removes the PDF."""
+    if not os.path.isfile(files.rebuilt_pdf(page.book_id, page.id)):
+        return False
+    if not typeset(page):
+        try:
+            with open(files.rebuilt_pdf(page.book_id, page.id) + ".json", encoding="utf-8") as f:
+                how = cast("dict[str, Any]", json.load(f))
+        except (OSError, ValueError):
+            return False  # made before the way was written down
+        return how.get("way") == PICTURES and how.get("kind") == page.kind
+    verdict = cast("dict[str, Any]", (page.ocr or {}).get("gate") or {})
+    return bool(verdict.get("passed")) and verdict.get("kind", "text") == page.kind and "way" not in verdict
 
 
 def typeset(page: Page) -> bool:

@@ -241,9 +241,6 @@ def read_layout(
 
 
 COLOUR = 40  # median saturation (0-255) of a picture's ink above which it is a coloured print, kept in colour
-INKED = (
-    0.03  # share of a page with no print or picture that is ink above which it is a pattern (marbled paper) kept whole
-)
 
 
 def cut_picture(png: str, box: tuple[int, int, int, int], out: str) -> str:
@@ -273,6 +270,16 @@ def cut_picture(png: str, box: tuple[int, int, int, int], out: str) -> str:
     return out
 
 
+def cut_as_is(png: str, box: tuple[int, int, int, int], out: str) -> str:
+    """The scan at `box` (page pixels), as it is, written to `out`; its path."""
+    from PIL import Image
+
+    x, y, w, h = box
+    with Image.open(png) as im:
+        im.convert("RGB").crop((x, y, x + w, y + h)).save(out)
+    return out
+
+
 def picture_page(
     png: str,
     boxes: list[tuple[int, int, int, int]],
@@ -280,10 +287,15 @@ def picture_page(
     dpi: int,
     run: RunFn = models_run,
     crops: str | None = None,
+    images: list[str] | None = None,
+    rules: bool = True,
+    whole: bool = False,
 ) -> None:
     """A page with no text set again: its pictures (page pixels [x, y, w, h]) cut from the scan onto clean paper, in colour when printed in
-    colour (`cut_picture`, into the folder `crops`), its rules drawn; no pictures, a blank page of its size (Jonathan, 2026-11-26: blanks as
-    true blanks, only pictures and patterns kept from the scan)."""
+            colour (`cut_picture`, into the folder `crops`), its rules drawn; no pictures, a blank page of its size (Jonathan, 2026-11-26: blanks as
+            true blanks, only pictures and patterns kept from the scan). `images`: the pictures already made (marks lifted off the paper, in
+        marks.py), one for each box, in place of cutting them; `rules`: draw the page's rules (none round handwriting). `whole`: the scan kept as
+    it is (a cover, a pattern, the book photographed), cut but not made paper-white: a cloth cover is no engraving on paper."""
     from PIL import Image
 
     with Image.open(png) as im:
@@ -293,7 +305,11 @@ def picture_page(
         {
             "box": [1000 * x / wide, 1000 * y / high, 1000 * (x + w) / wide, 1000 * (y + h) / high],
             "kind": "figure",
-            "image": cut_picture(png, (x, y, w, h), os.path.join(folder, f"{os.path.basename(out)}.{k}.png")),
+            "image": images[k]
+            if images is not None
+            else (cut_as_is if whole else cut_picture)(
+                png, (x, y, w, h), os.path.join(folder, f"{os.path.basename(out)}.{k}.png")
+            ),
         }
         for k, (x, y, w, h) in enumerate(boxes)
     ]
@@ -304,21 +320,9 @@ def picture_page(
         "dpi": dpi,
         "out": out,
         "png": False,
-        "rules": bool(boxes),
+        "rules": rules and bool(boxes),
     }
     run("page-build", params, DRAW)
-
-
-def inked_share(png: str) -> float:
-    """The share of the page that is ink (darker than 0.6 of its paper): a marbled endpaper is mostly ink, a blank leaf with show-through almost none."""
-    import numpy as np
-    from PIL import Image
-
-    npa: Any = np  # numpy's percentile, clip and median overloads are partially unknown to pyright
-
-    with Image.open(png) as im:
-        g = np.asarray(im.convert("L").reduce(4), dtype=np.float32)
-    return float((g < 0.6 * float(npa.percentile(g, 90))).mean())
 
 
 def rebuild_page(
