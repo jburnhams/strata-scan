@@ -435,6 +435,14 @@ def test_a_layout_that_fails_leaves_the_page_read_and_says_why(make_book, fake_m
     with store.session() as s:
         assert s.get(Book, b).error is None
     assert all(os.path.isfile(files.rebuilt_pdf(b, p.id)) for p in texts)
+    drawn = [
+        j["params"] for j in fake_models.jobs if j["role"] == "page-build" and j["params"].get("font_fit") is not None
+    ]
+    with store.session() as s:
+        pictured = set(s.scalars(select(Figure.page_id).join(Page).where(Page.book_id == b)))
+    assert any(d["groups"]["figures"] for d in drawn) is bool(
+        pictured & {p.id for p in texts}
+    )  # its pictures kept (review)
     pipeline.Runner(ocr=tesseract_ocr, correct=None, run_model=None).run(pipeline.Task(b, ("rebuild",)))
     with store.session() as s:
         assert "strata-models is not set up" in s.get(Book, b).error
@@ -447,6 +455,11 @@ def test_a_rebuild_needs_read_pages_and_a_stop_in_it_is_finished_not_restarted(m
         pipeline.StageError, match="strata-models is not set up"
     ):  # pages never read are still set, as pictures or blanks
         runner.rebuild_one(pages_of(b)[0])
+    unread = pages_of(b)[0]
+    pipeline.Runner(ocr=runner.ocr, correct=None, run_model=lambda role, params, model: {}).rebuild_one(unread)
+    assert (
+        next(p for p in pages_of(b) if p.id == unread.id).ocr is None
+    )  # still unread: its first reading guesses its kind (review)
     assert pipeline.resume_from("rebuild") == ("rebuild", "export")
     assert pipeline.resume_from("read") == ("read", "export")
     assert pipeline.resume_from("???") == ("detect", "read")

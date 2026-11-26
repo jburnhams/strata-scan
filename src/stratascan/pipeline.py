@@ -650,6 +650,8 @@ class Runner:
                 context = layout.numbered(ocr, self.run_model)
                 one = {"blocks": [{"lines": [n for n, _, _ in layout.numbered_lines(context)], "role": "body"}]}
                 groups = layout.plain_groups(context) or one
+                # its pictures, as the read found them or a person drew them: a layout model would have named them (review)
+                groups = dict(groups, figures=self.figures_in_thousandths(page, gray.shape))
                 ocr = dict(ocr, layout=layout.read_layout(png, ocr, layout.PLAIN, dpi, self.run_model, groups))
                 was = ocr
             except layout.LayoutError as e:
@@ -681,6 +683,19 @@ class Runner:
                 kept = {"faces": used, "plain": plain, "asked": faces is None}
                 p.ocr = dict(p.ocr, gate=record, type=kept)
 
+    def figures_in_thousandths(self, page: Page, shape: tuple[int, ...]) -> list[dict[str, Any]]:
+        """The page's pictures as a layout names them: boxes [x0, y0, x1, y1] in thousandths of the page."""
+        high, wide = shape[0], shape[1]
+        with store.session() as s:
+            figs = list(s.scalars(select(Figure).where(Figure.page_id == page.id)))
+        return [
+            {
+                "box": [1000 * f.x / wide, 1000 * f.y / high, 1000 * (f.x + f.w) / wide, 1000 * (f.y + f.h) / high],
+                "kind": "figure",
+            }
+            for f in figs
+        ]
+
     def rebuild_picture(self, page: Page) -> None:
         """A page with no text to set (`typeset`): its pictures cut from the scan onto clean paper, or the whole page when it is a cover or a
         pattern (marbled paper: mostly ink), or a true blank of its size when it holds neither (layout.picture_page). No gate: no text to check."""
@@ -706,8 +721,10 @@ class Runner:
             raise StageError(str(e)) from e
         with store.session() as s:
             p = s.get(Page, page.id)
-            if p is not None:
-                p.ocr = dict(p.ocr or {}, gate={"passed": True, "reasons": [], "picture": bool(boxes), "whole": whole})
+            if (
+                p is not None and p.ocr is not None
+            ):  # a page never read stays unread: its first reading guesses its kind (review)
+                p.ocr = dict(p.ocr, gate={"passed": True, "reasons": [], "picture": bool(boxes), "whole": whole})
 
     def tidied(self, page: Page, png: str) -> tuple[gate.Gray, dict[str, Any]]:
         """(the page in grey, its OCR tidied by its rows of ink: rows.tidy), as it is set."""
