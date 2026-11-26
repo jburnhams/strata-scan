@@ -149,3 +149,14 @@ def test_a_letter_leaning_over_its_neighbour_is_no_overlap_and_one_on_another_li
 
 def test_a_pointing_hand_is_no_symbol_to_print():
     assert gate.symbols("\u261e MAGIC LANTERNS \u2020") == {"\u2020": 1}
+
+
+def test_a_hyphened_compound_is_one_word_however_the_pdf_writes_its_hyphen():
+    assert gate.words("he was two-hundred years and extem-pore") == gate.words(
+        "he was two\ufffehundred years and extem\ufffepore"
+    )
+    assert gate.words("the appel-\nlative names") == gate.words("the appellative names")
+    assert gate.words("in its etymo- logy from") == gate.words("in its etymo\ufffelogy from")
+    assert gate.lost_words("he was two-hundred years old", "he was two\u2010hundred years old")[0] == 0.0
+    assert gate.lost_words("he was two-hundred years old", "he was two\u2011hundred years old")[0] == 0.0
+    assert gate.words("Act II - Scene") == {"act": 1, "ii": 1, "scene": 1}
