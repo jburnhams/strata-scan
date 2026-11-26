@@ -499,6 +499,9 @@ def create_app(runner: pipeline.Runner | None = None, migrate: bool = True) -> F
         p: Page = get_or_404(Page, page_id, "page")
         png = files.page_png(p.book_id, p.id)
         img = pipeline.read_image(png) if os.path.isfile(png) else None
+        files.remove(
+            files.rebuilt_pdf(p.book_id, p.id)
+        )  # made from the pictures these replace: made again by the next rebuild
         with store.session() as s:
             for f in s.scalars(select(Figure).where(Figure.page_id == page_id)):
                 files.remove(files.figure_png(p.book_id, f.id))

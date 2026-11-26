@@ -372,6 +372,16 @@ def test_the_finished_pdf_sets_every_page_and_one_that_fails_is_flagged(make_boo
     assert all(
         os.path.isfile(files.rebuilt_pdf(b, p.id)) for p in by_id.values()
     )  # every page set again: none left a scan
+    order.clear()
+    fake_models.jobs.clear()
+    r.run(
+        pipeline.Task(b, ("rebuild",))
+    )  # again: only the page that failed is set again, none made as it would be made now
+    assert order == [worst.id]
+    drawn = [j["params"]["out"] for j in fake_models.jobs if j["role"] == "page-build" and "out" in j["params"]]
+    assert {int(os.path.basename(o).split(".")[0]) for o in drawn} == {
+        worst.id
+    }  # no picture, cover or blank page made again
 
 
 def test_a_page_that_fails_is_set_again_from_its_rows_and_kept_only_when_it_passes(make_book, fake_models):
@@ -593,3 +603,52 @@ def test_a_page_that_fails_both_ways_is_read_again_by_another_reader_and_kept_on
     for p in texts:
         assert by_id[p.id].ocr["gate"]["passed"] is (p.id != bad)
         assert not os.path.exists(files.rebuilt_pdf(b, p.id) + ".reader.pdf")
+
+
+def test_a_leaf_keeps_its_writing_on_white_and_a_cover_is_cut_to_the_book(make_book, fake_models):
+    """A blank leaf with an owner's name is that name on white; a cover photographed on a dark backdrop is the book, cut from its whole scan
+    (not its page crop); made so, neither is made again."""
+    import cv2
+    import numpy as np
+    from books import tesseract_ocr
+
+    fake_models.results = models_answers(fake_models)
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
+    b = make_book()
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    leaf, cover = pages_of(b)[:2]
+    name = np.full((1600, 1000, 3), (180, 215, 230), np.uint8)
+    for k in range(6):  # a signature's strokes
+        cv2.line(name, (300 + 40 * k, 500), (320 + 40 * k, 440), (70, 70, 80), 5)
+    cv2.imwrite(files.page_png(b, leaf.id), name)
+    photo = np.full((1600, 1200, 3), 25, np.uint8)
+    photo[200:1400, 300:900] = (60, 90, 70)
+    with store.session() as s:
+        s.get(Page, leaf.id).kind = "blank"
+        s.get(Page, cover.id).kind = "cover"
+        s.get(Page, cover.id).angle = 0.0
+        scan = s.get(Scan, cover.scan_id)
+        cv2.imwrite(os.path.join(files.book_dir(b), scan.file), photo)
+    fake_models.jobs.clear()
+    r.run(pipeline.Task(b, ("rebuild",), (leaf.id, cover.id)))
+    drawn = {
+        int(os.path.basename(j["params"]["out"]).split(".")[0]): j["params"]
+        for j in fake_models.jobs
+        if j["role"] == "page-build" and "out" in j["params"]
+    }
+    (mark,) = drawn[leaf.id]["groups"]["figures"]
+    assert mark["image"].endswith(f"{leaf.id}.marks.png")
+    assert not drawn[leaf.id]["rules"]
+    assert mark["box"][0] < 300  # where the name is on the leaf, in thousandths
+    assert mark["box"][1] < 300
+    cut = cv2.imread(mark["image"])
+    assert np.median(cut) == 255  # on white
+    assert cut.min() < 120  # the strokes dark
+    (book_cut,) = drawn[cover.id]["groups"]["figures"]
+    assert drawn[cover.id]["image"].endswith(f"{cover.id}.book.png")
+    assert cv2.imread(drawn[cover.id]["image"]).shape[:2] == pytest.approx((1200, 600), abs=30)
+    assert book_cut["box"] == [0.0, 0.0, 1000.0, 1000.0]
+    assert all(pipeline.made(p) for p in pages_of(b) if p.id in (leaf.id, cover.id))
+    with store.session() as s:
+        s.get(Page, cover.id).kind = "picture"  # a person says it is a picture: made again
+    assert not pipeline.made(next(p for p in pages_of(b) if p.id == cover.id))

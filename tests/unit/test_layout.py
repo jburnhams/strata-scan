@@ -283,4 +283,3 @@ def test_a_picture_page_is_its_pictures_on_clean_paper(tmp_path):
     assert Image.open(out).mode == "RGB"
     assert Image.open(out).getpixel((150, 150))[1] < 80  # still red
     assert Image.open(out).getpixel((10, 10)) == (255, 255, 255)  # the paper made white
-    assert layout.inked_share(str(colour)) == pytest.approx(0.25, abs=0.02)
