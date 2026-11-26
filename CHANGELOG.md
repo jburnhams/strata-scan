@@ -4,9 +4,10 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-26
 
-**A patterned leaf stays within its page crop (branch `pattern-crop`)**
+**A patterned leaf stays within its page crop, and photographs and patterns read as text are not set in type (branch `pattern-crop`)**
 Review of PR 19: a marbled endpaper on one side of a two-page scan was cut from the whole scan, bringing the other page with it.
 - `pipeline.py` `rebuild_picture`: only a cover or the book photographed is cut from its whole scan; a pattern keeps its page crop. `book_in` does nothing for one side of a spread.
+- And from the remake of both books: a page that is the book photographed is cut to the book even when the read found a picture on it (the 1828 book's page 3, an edge shot, came out as that "picture" whitened like an engraving); a text page that is the book photographed or a pattern is not set in type (the 1874 book's marbled endpaper, page 42, had OCR letters "AAA", "ARAA" and was set as type). Both pages were put right in the live books by marking them cover and picture.
 - `tests/unit/test_pipeline.py`.
 
 **Handwriting and bookplates kept on white, covers trimmed to the book, and pages already made not made again (branch `keep-marks`)**

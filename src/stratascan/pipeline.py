@@ -641,13 +641,15 @@ class Runner:
     def rebuild_one(self, page: Page) -> None:
         if self.run_model is None:
             raise StageError("strata-models is not set up")
-        if not typeset(page):
+        png = files.page_png(page.book_id, page.id)
+        if typeset(page) and not os.path.isfile(png):
+            render(page)
+        if not typeset(page) or marks.dark(png) or marks.lift(png, None).share > marks.PATTERN:
+            # a "text" page that is the book photographed, or marbled paper the OCR read letters in ("AAA", "ARAA"): no type to set
             self.rebuild_picture(page)
             return
-        png = files.page_png(page.book_id, page.id)
-        if not os.path.isfile(png):
-            render(page)
         out = files.rebuilt_pdf(page.book_id, page.id)
+        files.remove(out + ".json")  # set in type now, not made as a picture page
         dpi = scan_dpi(page)
         gray, ocr = self.tidied(page, png)
         was = page.ocr or {}
@@ -721,7 +723,7 @@ class Runner:
         made: dict[str, Any] = {}
         if page.kind == "blank":
             boxes = []  # what the page finder saw on a blank page is show-through and specks; a mark on it is lifted below
-        if page.kind == "cover" or (not boxes and marks.dark(png)):
+        if page.kind == "cover" or marks.dark(png):  # a picture found on the book photographed is the book itself
             made["whole"] = made["book"] = True  # the book photographed: a cover, its spine, its edges
         elif not boxes:
             lifted = marks.lift(png, self.paper_hue(page.book_id))
@@ -944,13 +946,15 @@ def made(page: Page) -> bool:
     current way (PICTURES). Either as the kind it is now: a page whose kind a person changed is made again. Editing its text removes the PDF."""
     if not os.path.isfile(files.rebuilt_pdf(page.book_id, page.id)):
         return False
-    if not typeset(page):
-        try:
-            with open(files.rebuilt_pdf(page.book_id, page.id) + ".json", encoding="utf-8") as f:
-                how = cast("dict[str, Any]", json.load(f))
-        except (OSError, ValueError):
-            return False  # made before the way was written down
+    try:
+        with open(files.rebuilt_pdf(page.book_id, page.id) + ".json", encoding="utf-8") as f:
+            how = cast("dict[str, Any] | None", json.load(f))
+    except (OSError, ValueError):
+        how = None  # set in type, or made before the way was written down
+    if how is not None:
         return how.get("way") == PICTURES and how.get("kind") == page.kind
+    if not typeset(page):
+        return False
     verdict = cast("dict[str, Any]", (page.ocr or {}).get("gate") or {})
     return bool(verdict.get("passed")) and verdict.get("kind", "text") == page.kind and "way" not in verdict
 

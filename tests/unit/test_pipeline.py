@@ -651,8 +651,10 @@ def test_a_leaf_keeps_its_writing_on_white_and_a_cover_is_cut_to_the_book(make_b
     marbled = np.random.default_rng(3).integers(0, 255, (160, 100, 3), dtype=np.uint8)
     cv2.imwrite(files.page_png(b, leaf.id), cv2.resize(marbled, (1000, 1600), interpolation=cv2.INTER_NEAREST))
     with store.session() as s:
-        s.get(Page, leaf.id).kind = "text"  # a marbled endpaper read as text, with nothing in it: no lines
-        s.get(Page, leaf.id).ocr = dict(s.get(Page, leaf.id).ocr or {}, lines=[])
+        s.get(Page, leaf.id).kind = "text"  # a marbled endpaper the OCR read letters in: no type to set
+        line = {"text": "AAA ARAA", "box": [100, 100, 300, 40], "words": []}
+        s.get(Page, leaf.id).ocr = dict(s.get(Page, leaf.id).ocr or {}, lines=[line])
+        s.get(Page, leaf.id).text = "AAA ARAA"
     fake_models.jobs.clear()
     r.run(pipeline.Task(b, ("rebuild",), (leaf.id,)))
     (pattern,) = [j["params"] for j in fake_models.jobs if j["role"] == "page-build" and "out" in j["params"]]
