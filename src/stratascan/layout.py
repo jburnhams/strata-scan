@@ -131,6 +131,15 @@ def plain_groups(context: str) -> dict[str, Any] | None:
     if low <= 0 or high > PLAIN_SPREAD * low:
         return None
     usual = heights[len(heights) // 2]
+    # two columns: lines side by side on one row. Sorted top down they would interleave, so the layout model reads such a page (review)
+    beside = sum(
+        1
+        for i, a in enumerate(texty)
+        for b in texty[i + 1 :]
+        if min(a[1][3], b[1][3]) - max(a[1][1], b[1][1]) > 0.5 * usual and (a[1][2] <= b[1][0] or b[1][2] <= a[1][0])
+    )
+    if beside >= 3:
+        return None
     left = min(r[1][0] for r in texty)
     right = max(r[1][2] for r in texty)
     middle = (left + right) / 2
@@ -152,9 +161,10 @@ def plain_groups(context: str) -> dict[str, Any] | None:
             roles[n] = "folio"
         elif letters and sum(c.isupper() for c in letters) / len(letters) > 0.7 and len(text.split()) <= 8:
             roles[n] = "running-head"
-    lone = "folio" not in roles.values() and len(head) == 1 and len(head[0][2].split()) < 2
-    if "running-head" not in roles.values() or lone:
-        roles = {}  # one word of capitals and no page number is the page's heading, set as the text's (the 1874 book's PREFACE)
+    if "running-head" in roles.values() and "folio" not in roles.values():
+        return None  # a line of capitals with no page number beside it may be a chapter's title: the layout model tells them apart (review)
+    if "running-head" not in roles.values():
+        roles = {}  # what stood at the top is the text's, set as the text's (the 1874 book's PREFACE)
     if rows[-1][2].strip().isdigit():
         roles[rows[-1][0]] = "folio"
     blocks: list[dict[str, Any]] = [{"lines": [n], "role": role} for n, role in roles.items()]

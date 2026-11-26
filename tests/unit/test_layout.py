@@ -213,8 +213,11 @@ def test_a_page_of_few_lines_or_many_sizes_is_no_plain_page_and_a_lone_word_is_i
         ([150, 100 + 40 * i, 840, 100 + 40 * i + (16 if i % 2 else 40)], "TOYS AND FANCY GOODS") for i in range(14)
     ]
     assert layout.plain_groups(lines_of(mixed)) is None
-    got = layout.plain_groups(lines_of([([400, 100, 580, 116], "PREFACE."), *BODY]))["blocks"]
-    assert got[0] == {"lines": [1], "role": "heading"}
+    assert layout.plain_groups(lines_of([([400, 100, 580, 116], "PREFACE."), *BODY])) is None  # a title, or a head?
+    assert layout.plain_groups(lines_of([([380, 100, 600, 116], "CHAPTER II."), *BODY])) is None
+    two = [([150, 140 + 20 * i, 480, 156 + 20 * i], "the minute fidelity of the puppets") for i in range(12)]
+    two += [([520, b[1], 850, b[3]], t) for b, t in two]
+    assert layout.plain_groups(lines_of(two)) is None
 
 
 def test_a_plain_layout_asks_no_model():
