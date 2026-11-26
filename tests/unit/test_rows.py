@@ -104,9 +104,12 @@ def test_tidy_drops_the_frame_read_as_a_word_and_cuts_boxes_to_the_row_without_m
     line = ocr["lines"][3]
     high = line["box"][3]
     line["words"].insert(0, {"text": "|", "box": [42, line["box"][1], 6, 30], "conf": 40.0})
+    mark = {"text": "\u2020", "box": [line["box"][0] - 30, line["box"][1], 10, 14], "conf": 60.0}
     line["words"][-1]["box"][2] += 500
     line["text"] = "| " + line["text"]
+    ocr["lines"][2]["words"].insert(0, mark)  # a footnote's mark left of its row: kept
     got = rows.tidy(ocr, gray, DPI)["lines"]
+    assert got[2]["words"][0]["text"] == "\u2020"
     assert len(got) == len(ocr["lines"])
     assert got[3]["text"] == "No. 926 Market Street,"
     assert got[3]["words"][0]["text"] == "No."

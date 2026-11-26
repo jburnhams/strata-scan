@@ -25,6 +25,7 @@ RULE_WIDE, RULE_THIN = 0.18, 0.02  # of the page: a mark this wide and this flat
 TALL, BROAD = 0.12, 0.5  # of the page: a larger mark is the frame or a picture
 FRAME = 0.25  # of the page's height: a column with a vertical line this long is the frame's
 LETTER = 0.8, 0.4  # of the row's height and width: a mark this big is a letter, and some word's box must hold it
+MARKS = frozenset("*\u2020\u2021\u00a7\u00b6\u2016[]()")  # reference marks and brackets: type, however small or far out
 MARK = 3  # glyphs a row needs to be type: an ornament or a stray mark has fewer
 SKIP = 0.35  # what leaving a row or a line unpaired costs, against a pair's likeness of 0 to 1
 GOOD = (
@@ -211,7 +212,8 @@ def tidy(ocr: dict[str, Any], gray: gate.Gray, dpi: float) -> dict[str, Any]:
         for w in words:
             x, y, bw, bh = (int(v) for v in w["box"])
             outside = x + bw <= x0 or x >= x1
-            if outside and not re.search(r"\w", str(w["text"])):
+            # the frame read as a word ("|", "!"): not a footnote's mark, which stands just left of its row (`MARKS`)
+            if outside and not re.search(r"\w", str(w["text"])) and not set(str(w["text"])) & MARKS:
                 continue
             slack = 0.6 * row.box[3]  # a stop or a comma is no glyph of the row's
             left = x0 if x < x0 - slack and not outside else x

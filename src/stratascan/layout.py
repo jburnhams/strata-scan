@@ -315,6 +315,11 @@ def with_corrected(texts: Mapping[str, Any], corrected: str, context: str) -> di
     for op, i1, i2, j1, j2 in m.get_opcodes():
         if op == "equal":
             found.update(where[i][0] for i in range(i1, i2))
+            for i, j in zip(range(i1, i2), range(j1, j2), strict=True):
+                if same_word(old[i], new[j]):  # the same word, but for a mark the line fix missed
+                    n, at = where[i]
+                    lines[n][at] = new[j]
+                    changed.add(n)
         if op != "replace":
             continue
         for b, k in enumerate(align(new[j1:j2], old[i1:i2])):  # alike words only, in order
@@ -388,9 +393,16 @@ def with_left_out(laid: dict[str, Any], context: str, ocr: Mapping[str, Any]) ->
     return dict(laid, groups=dict(groups, blocks=blocks), blocks=seen)
 
 
+MARKS = frozenset("*\u2020\u2021\u00a7\u00b6\u2016")  # reference marks: a footnote's, which a reading often misses
+
+
 def same_word(old: str, new: str) -> bool:
     """Whether `new` may stand for `old`: they differ, and neither holds much more than the other (two words the OCR ran together, half a word)."""
     a, b = letters(old), letters(new)
+    if (
+        a and a == b
+    ):  # the same word with a mark the reading missed ("Faustus," for "Faustus,\u2020"): the corrected text's has it
+        return bool(set(new) & MARKS - set(old))
     return bool(a and b) and a != b and 0.75 * len(a) <= len(b) <= 1.4 * len(a)
 
 

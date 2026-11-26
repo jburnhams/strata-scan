@@ -241,3 +241,10 @@ def test_a_books_shortlist_is_sent_and_no_proposer_asked():
     assert (asked["candidates"], asked["propose"]) == (["a", "b"], False)
     layout.rebuild_page("/p.png", ocr, "/o.pdf", 300, None, run, "")
     assert "candidates" not in [c[1] for c in run.calls if c[0] == "font-match"][-1]
+
+
+def test_a_reference_mark_the_line_fix_missed_is_put_in_from_the_corrected_text():
+    context = "1 b1 [0,0,1,1] Dr. Faustus, the Queen\n2 b1 [0,0,1,1] of Sheba, and"
+    got = layout.with_corrected({}, "Dr. Faustus,\u2020 the Queen\nof Sheba, and", context)["lines"]
+    assert got == [{"n": 1, "text": "Dr. Faustus,\u2020 the Queen"}]
+    assert not layout.same_word("Faustus,", "Faustus;")

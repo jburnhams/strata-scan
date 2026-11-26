@@ -4,6 +4,14 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-26
 
+**Footnote marks kept, and hyphened words counted alike (branch `gate-fixes`)**
+Jonathan: look into the 17 pages of the 1828 book the gate kept as scans. 14 were faults of this app's own making, 3 the gate rightly caught.
+- `rows.py` `tidy`: a footnote's mark or a bracket just left of its row ("* He uses general terms", "‡ The title") is kept; only a mark with no letters and none of `MARKS` (the frame read as "|") goes. It had dropped them, and on one page took the running head's box with it, which was then drawn twice.
+- `layout.py` `with_corrected`: a word the corrected text has with a reference mark the line fix lacks ("Faustus," for "Faustus,†") takes the mark.
+- `gate.py` `unbroken`: a hyphen inside a line joins its compound as a line-end one does (pdfium gives some as U+FFFE: "two-hundred", "extem-pore"), and so does one followed by a space ("etymo- logy", as a reading may give it).
+- The 17 pages rebuilt with these, in a scratch copy: 12 pass. Of the other 5, four lack a symbol (a "†" the line fix read as "+", "]" at two line ends) and one is a stained page whose lines came out squashed; one more (page 123) fails on ink against a pale scan though it looks right.
+- `tests/unit/test_rows.py`, `test_layout.py`, `test_gate.py`.
+
 **A plain page asks no layout model, and a book's plain pages share one font shortlist (branch `plain-pages`)**
 Jonathan: a page full of text shouldn't need layout, and the font shortlist can be the same for all similar pages of a book. The layout model (Opus) was two thirds of the cost of setting a book in type, and the shortlist (Sonnet) most of the rest.
 - `layout.py`: `plain_groups`: a page of 12 lines or more of one size of type, with no pictures, is laid out from its own lines (running head and page number at the top, a page number at the foot, centred short lines standing alone as headings, the rest body in blocks parted at gaps), with a streak read as a tall line left out. Its layout's `model` is `plain`. On the 1874 book it takes 12 of its 13 pages of running text and gives the layout model's answer; adverts, the title, the notice, verse, the Preface and pages with pictures go to the model. Of 12 sampled pages of the 1828 book, 8 are plain. Review: two columns, and a line of capitals with no page number beside it (a running head, or a chapter's title?), go to the model too.
