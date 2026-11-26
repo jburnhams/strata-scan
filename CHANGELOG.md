@@ -2,6 +2,15 @@
 
 Newest first, grouped by day. One entry per change, in the same commit or PR as the change.
 
+## 2026-11-26
+
+**A plain page asks no layout model, and a book's plain pages share one font shortlist (branch `plain-pages`)**
+Jonathan: a page full of text shouldn't need layout, and the font shortlist can be the same for all similar pages of a book. The layout model (Opus) was two thirds of the cost of setting a book in type, and the shortlist (Sonnet) most of the rest.
+- `layout.py`: `plain_groups`: a page of 12 lines or more of one size of type, with no pictures, is laid out from its own lines (running head and page number at the top, a page number at the foot, centred short lines standing alone as headings, the rest body in blocks parted at gaps), with a streak read as a tall line left out. Its layout's `model` is `plain`. On the 1874 book it takes exactly the 13 pages of running text and gives the layout model's answer; adverts, the title, the notice, verse and pages with pictures still go to the model. Of 12 pages of the 1828 book, 11 are plain.
+- `pipeline.py`: the read stage queues no layout call for a plain page. The rebuild asks for a font shortlist for the first `SAMPLE` (3) plain pages of a book, then gives the rest the 4 faces those named most (`ocr["type"]`).
+- The 13 plain pages of the 1874 book set this way through the live service: all pass the gate, ink as before, $0.073 (about 0.6 cents a page instead of about 5.5).
+- `tests/unit/test_layout.py`, `test_pipeline.py` (the stand-in page-build lists real line boxes).
+
 ## 2026-11-25
 
 **A book's Claude calls are queued in bulk, at the batch price (branch `claude/calls-in-bulk`)**

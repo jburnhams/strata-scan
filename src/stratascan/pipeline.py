@@ -28,7 +28,7 @@ default they are the client."""
 import logging
 import os
 import threading
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -108,6 +108,10 @@ def plausible(before: str, after: str) -> bool:
     lines out, far longer that it added words or described the page."""
     a, b = len(before.strip()), len(after.strip())
     return b > 0 and 0.7 * a <= b <= 1.3 * a + 20
+
+
+SAMPLE = 3  # plain pages of a book whose font shortlist is asked for before the rest share theirs
+SHORTLIST = 4  # faces in a shared shortlist: as many as the proposer names for a page
 
 
 class StageError(RuntimeError):
@@ -334,7 +338,7 @@ class Runner:
                     context = layout.numbered(rd.r, layout.models_run)
                 except layout.LayoutError:
                     continue
-                if context:
+                if context and (rd.boxes or not layout.plain_groups(context)):  # a plain page asks no layout model
                     calls.append(("vision-language", layout.layout_params(rd.png, context), lay))
         return calls
 
@@ -505,7 +509,7 @@ class Runner:
 
     def finish_read(self, page: Page, rd: Reading) -> None:
         png, boxes, confs, sure, kind = rd.png, rd.boxes, rd.confs, rd.sure, rd.kind
-        r = dict(rd.r, corrected=self.correct_page(rd), layout=self.layout_page(page, png, rd.r, sure, kind))
+        r = dict(rd.r, corrected=self.correct_page(rd), layout=self.layout_page(page, png, rd.r, sure, kind, boxes))
         files.remove(files.rebuilt_pdf(page.book_id, page.id))  # set from the reading this one replaces
         with store.session() as s:
             p = s.get(Page, page.id)
@@ -582,14 +586,24 @@ class Runner:
         cleaned = clean_text(r, sure, kind)
         return cleaned if len(cleaned) >= 0.7 * len(text) else text
 
-    def layout_page(self, page: Page, png: str, r: dict[str, Any], sure: int, kind: str) -> dict[str, Any] | None:
+    def layout_page(
+        self,
+        page: Page,
+        png: str,
+        r: dict[str, Any],
+        sure: int,
+        kind: str,
+        pictures: list[tuple[int, int, int, int]] | None = None,
+    ) -> dict[str, Any] | None:
         """The page's layout (layout.read_layout), or {model, error}, or None when there is none to read: layout off, or not a text page. A
-        page that failed here keeps its text: the Markdown falls back to Tesseract's blocks."""
+        page that failed here keeps its text: the Markdown falls back to Tesseract's blocks. A plain page with no pictures is laid out from
+        its own lines (layout.plain_groups), with no model asked."""
         model = settings.layout_model()
         if self.run_model is None or model is None or kind != "text" or not clean_text(r, sure, kind):
             return None
         try:
-            return layout.read_layout(png, r, model, scan_dpi(page), self.run_model)
+            groups = None if pictures else layout.plain_groups(layout.numbered(r, self.run_model))
+            return layout.read_layout(png, r, model, scan_dpi(page), self.run_model, groups)
         except layout.LayoutError as e:
             log.warning("page %s: layout failed: %s", page.id, e)
             return {"model": model, "error": str(e)}
@@ -622,8 +636,10 @@ class Runner:
         out = files.rebuilt_pdf(page.book_id, page.id)
         dpi = scan_dpi(page)
         gray, ocr = self.tidied(page, png)
+        plain = cast("dict[str, Any]", ocr.get("layout") or {}).get("model") == layout.PLAIN
+        faces = self.book_faces(page.book_id) if plain else None
         try:
-            self.set_in_type(page, ocr, png, out, dpi, page.ocr or {})
+            used = self.set_in_type(page, ocr, png, out, dpi, page.ocr or {}, faces)
         except layout.LayoutError as e:
             files.remove(out)
             raise StageError(str(e)) from e
@@ -641,7 +657,9 @@ class Runner:
                     "lines_put_right": fixed,
                     "from_rows": list(also),
                 }
-                p.ocr = dict(p.ocr, gate=record)  # a new dict: SQLAlchemy does not see a JSON column change in place
+                # a new dict: SQLAlchemy does not see a JSON column change in place. `type`: the font shortlist this page was set with
+                kept = {"faces": used, "plain": plain, "asked": faces is None}
+                p.ocr = dict(p.ocr, gate=record, type=kept)
 
     def tidied(self, page: Page, png: str) -> tuple[gate.Gray, dict[str, Any]]:
         """(the page in grey, its OCR tidied by its rows of ink: rows.tidy), as it is set."""
@@ -650,12 +668,34 @@ class Runner:
         return gray, rows.tidy(page.ocr or {}, gray, scan_dpi(page))
 
     def set_in_type(
-        self, page: Page, ocr: dict[str, Any], png: str, out: str, dpi: int, was: dict[str, Any] | None = None
-    ) -> None:
+        self,
+        page: Page,
+        ocr: dict[str, Any],
+        png: str,
+        out: str,
+        dpi: int,
+        was: dict[str, Any] | None = None,
+        faces: list[str] | None = None,
+    ) -> list[str]:
         if self.run_model is None:
             raise layout.LayoutError("strata-models is not set up")
         typed = (page.text or "") if page.text_edited else None
-        layout.rebuild_page(png, ocr, out, dpi, typed, self.run_model, page.text, was)
+        return layout.rebuild_page(png, ocr, out, dpi, typed, self.run_model, page.text, was, faces)
+
+    def book_faces(self, book_id: int) -> list[str] | None:
+        """The font shortlist for a plain page of the book: the faces most often proposed for its plain pages, once SAMPLE of them have had
+        one proposed. None (ask for one) before that. A book's body type is one face, so asking for each page paid for the same answer."""
+        with store.session() as s:
+            q = select(Page.ocr).where(Page.book_id == book_id, Page.kind == "text", Page.ocr.is_not(None))
+            told: list[list[str]] = []
+            for ocr in s.scalars(q):
+                t = cast("dict[str, Any]", (ocr or {}).get("type") or {})
+                if t.get("plain") and t.get("asked") and t.get("faces"):
+                    told.append([str(f) for f in cast("list[Any]", t["faces"])])
+        if len(told) < SAMPLE:
+            return None
+        votes = Counter(f for faces in told for f in faces)
+        return [f for f, _ in votes.most_common(SHORTLIST)]
 
     def second_reading(self, page: Page, png: str) -> str | None:
         """The page read again by another route, to check its words by; None for a person's text (the one to hold the page to) or none to be had."""

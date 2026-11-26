@@ -11,6 +11,7 @@ winners of strata-models' evals (2026-11-15 to 2026-11-24), measured on whole pa
 
 Every call goes through the strata-models service by role; the models are named because the evals measured these ones."""
 
+import itertools
 import json
 import os
 import re
@@ -99,13 +100,111 @@ def settled(ocr: Mapping[str, Any], was: Mapping[str, Any] | None, run: RunFn = 
     return ocr
 
 
-def read_layout(png: str, ocr: Mapping[str, Any], model: str, dpi: int, run: RunFn = models_run) -> dict[str, Any]:
+PLAIN = "plain"  # a layout's `model` when it was worked out from the page's own lines (`plain_groups`), no model asked
+PLAIN_LINES = 12  # a page of fewer lines is a title, a notice or a scrap: the layout model reads it
+PLAIN_SPREAD = 1.6  # its lines' heights (90th percentile over 10th) at most this far apart: one size of type, with its smaller verse
+GAP = 1.8  # times the usual distance from one line to the next: a gap between blocks
+
+
+def numbered_lines(context: str) -> list[tuple[int, list[float], str]]:
+    """(number, box in thousandths [x0, y0, x1, y1], text) of each line of `numbered`'s list."""
+    out: list[tuple[int, list[float], str]] = []
+    for m in re.finditer(r"^(\d+) b-?\d+ \[([\d.,-]+)\] ?(.*)$", context, re.M):
+        box = [float(v) for v in m[2].split(",")]
+        if len(box) == 4:
+            out.append((int(m[1]), box, m[3]))
+    return out
+
+
+def plain_groups(context: str) -> dict[str, Any] | None:
+    """A plain page's layout from its own lines, or None when the page is not plain. Plain: a page of running text in one size of type, its
+    lines no further apart in height than PLAIN_SPREAD, and enough of them. Its layout is the running head and page number at the top (a
+    lone figure at the foot is the page number too), centred short lines standing alone are headings, and the rest is body text in blocks
+    parted where a gap falls. Few blocks rather than many: a block's sizes are snapped to one (page-build). This is what the layout model answered for the 1874 book's pages of dialogue
+    (2026-11-26), and asking it was two thirds of the cost of setting a book in type."""
+    rows = sorted(numbered_lines(context), key=lambda t: t[1][1])
+    texty = [r for r in rows if sum(c.isalpha() for c in r[2]) >= 3]
+    if len(texty) < PLAIN_LINES:
+        return None
+    heights = sorted(r[1][3] - r[1][1] for r in texty)
+    low, high = heights[len(heights) // 10], heights[(9 * len(heights)) // 10]
+    if low <= 0 or high > PLAIN_SPREAD * low:
+        return None
+    usual = heights[len(heights) // 2]
+    left = min(r[1][0] for r in texty)
+    right = max(r[1][2] for r in texty)
+    middle = (left + right) / 2
+    roles: dict[int, str] = {}
+    # no streak read as a line far taller than the type (left out, as the layout model leaves it), and no mark of the frame above the type
+    rows = [
+        r
+        for r in rows
+        if r[1][3] - r[1][1] <= 2.5 * usual and (r[1][2] - r[1][0] > r[1][3] - r[1][1] or r[2].strip().isdigit())
+    ]  # nor a narrow one, but for a page number
+    rows = [r for r in rows if r[1][1] >= texty[0][1][1] - usual or r[2].strip().isdigit()]
+    if not rows:
+        return None
+    top = rows[0][1][1]
+    head = [r for r in rows if r[1][1] <= top + usual]  # the first line, in its pieces
+    for n, _box, text in head:
+        letters = [c for c in text if c.isalpha()]
+        if not letters and any(c.isdigit() for c in text):
+            roles[n] = "folio"
+        elif letters and sum(c.isupper() for c in letters) / len(letters) > 0.7 and len(text.split()) <= 8:
+            roles[n] = "running-head"
+    lone = "folio" not in roles.values() and len(head) == 1 and len(head[0][2].split()) < 2
+    if "running-head" not in roles.values() or lone:
+        roles = {}  # one word of capitals and no page number is the page's heading, set as the text's (the 1874 book's PREFACE)
+    if rows[-1][2].strip().isdigit():
+        roles[rows[-1][0]] = "folio"
+    blocks: list[dict[str, Any]] = [{"lines": [n], "role": role} for n, role in roles.items()]
+    body = [r for r in rows if r[0] not in roles]
+    pitch = sorted(b[1][1] - a[1][1] for a, b in itertools.pairwise(body) if b[1][1] > a[1][1]) or [usual]
+    step = pitch[len(pitch) // 2]
+    current: list[int] = []
+    last: tuple[int, list[float], str] | None = None
+    for i, (n, box, text) in enumerate(body):
+        width = box[2] - box[0]
+        centred = abs((box[0] + box[2]) / 2 - middle) < 0.05 * (right - left) and width < 0.6 * (right - left)
+        alone = (last is None or box[1] - last[1][1] > GAP * step) and (
+            i + 1 == len(body) or body[i + 1][1][1] - box[1] > GAP * step
+        )
+        if centred and alone and len(text.split()) <= 6:
+            if current:
+                blocks.append({"lines": current, "role": "body"})
+                current = []
+            blocks.append({"lines": [n], "role": "heading"})
+            last = (n, box, text)
+            continue
+        parted = last is not None and box[1] - last[1][1] > GAP * step
+        if current and parted:
+            blocks.append({"lines": current, "role": "body"})
+            current = []
+        current.append(n)
+        last = (n, box, text)
+    if current:
+        blocks.append({"lines": current, "role": "body"})
+    return {"blocks": blocks, "figures": []}
+
+
+def read_layout(
+    png: str,
+    ocr: Mapping[str, Any],
+    model: str,
+    dpi: int,
+    run: RunFn = models_run,
+    groups: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """A page's layout as {model, groups, blocks: [{role, lines: [box, ...]}]}: the model's groups of numbered lines (what `rebuild_page`
-    draws again) and, for the export, each block's role with its lines' boxes in page pixels, in reading order."""
+    draws again) and, for the export, each block's role with its lines' boxes in page pixels, in reading order. With `groups` (a plain page's,
+    `plain_groups`) no model is asked."""
     context = numbered(ocr, run)
     if not context:
         raise LayoutError("the page has no lines to lay out")
-    groups = answer_json(run("vision-language", layout_params(png, context), model))
+    if groups is None:
+        groups = answer_json(run("vision-language", layout_params(png, context), model))
+    else:
+        model = PLAIN
     if not groups.get("blocks"):
         raise LayoutError("the layout model found no blocks")
     with tempfile.TemporaryDirectory() as tmp:
@@ -140,10 +239,12 @@ def rebuild_page(
     run: RunFn = models_run,
     corrected: str | None = None,
     was: Mapping[str, Any] | None = None,
-) -> None:
+    faces: list[str] | None = None,
+) -> list[str]:
     """The page set again as a PDF with real text at `out`, from its stored layout (`ocr["layout"]["groups"]`). `typed` is a person's text:
     it goes in as it stands, so a page whose typed lines are not the printed ones cannot be set line for line. `corrected` is the page's
-    corrected text, whose words put misread ones right (`with_corrected`). `was` is the OCR answer the layout was read from, when `ocr` is that answer tidied."""
+    corrected text, whose words put misread ones right (`with_corrected`). `faces` is the book's font shortlist, so none is asked for; the answer is the
+    shortlist the fit used (`proposed`). `was` is the OCR answer the layout was read from, when `ocr` is that answer tidied."""
     layout = cast("dict[str, Any]", ocr.get("layout") or {})
     groups = layout.get("groups")
     if not groups:
@@ -157,7 +258,10 @@ def rebuild_page(
         )
     else:
         texts = typed_texts(typed, context)
-    fit = run("font-match", {"mode": "fit", "lines": base.get("lines") or [], "image": png, "dpi": dpi}, None)
+    asked: dict[str, Any] = {"mode": "fit", "lines": base.get("lines") or [], "image": png, "dpi": dpi}
+    if faces:
+        asked.update(candidates=faces, propose=False)  # the book's shortlist: no model asked for one
+    fit = run("font-match", asked, None)
     run(
         "page-build",
         {
@@ -173,6 +277,7 @@ def rebuild_page(
         },
         DRAW,
     )
+    return [str(f) for f in cast("list[Any]", fit.get("proposed") or [])]
 
 
 def read_again(png: str, run: RunFn = models_run) -> str:

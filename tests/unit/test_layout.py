@@ -171,3 +171,70 @@ def test_a_tidied_page_whose_lines_are_numbered_otherwise_is_set_from_the_one_it
     was = {**OCR, "lines": OCR["lines"] * 2, "layout": {"groups": {"a": 1}}}
     layout.rebuild_page("/p.png", {**OCR, "layout": {"groups": {"a": 1}}}, "/o.pdf", 300, None, run, "", was)
     assert len(run.calls[-1][1]["ocr"]["lines"]) == 2
+
+
+def lines_of(rows):
+    """`numbered`'s list from (box in thousandths, text) rows."""
+    return "\n".join(f"{n} b1 [{','.join(str(v) for v in box)}] {text}" for n, (box, text) in enumerate(rows, 1))
+
+
+BODY = [
+    ([150, 140 + 20 * i, 840, 156 + 20 * i], "the minute fidelity of the puppets to the manners") for i in range(14)
+]
+
+
+def test_a_plain_page_is_laid_out_from_its_own_lines():
+    rows = [([400, 100, 580, 112], "PUNCH AND JUDY."), ([820, 100, 836, 112], "9"), *BODY]
+    got = layout.plain_groups(lines_of(rows))
+    assert got == {
+        "blocks": [
+            {"lines": [1], "role": "running-head"},
+            {"lines": [2], "role": "folio"},
+            {"lines": list(range(3, 17)), "role": "body"},
+        ],
+        "figures": [],
+    }
+    # a centred line alone between gaps is a heading; a gap parts the body; a streak read as a tall line is left out
+    rows = [
+        *rows[:2],
+        *BODY[:7],
+        ([440, 300, 560, 316], "Act II."),
+        *[([b[0], b[1] + 60, b[2], b[3] + 60], t) for b, t in BODY[7:]],
+    ]
+    rows.append(([880, 90, 891, 160], "ee tna"))
+    got = layout.plain_groups(lines_of(rows))["blocks"]
+    assert [b["role"] for b in got] == ["running-head", "folio", "body", "heading", "body"]
+    assert 18 not in [n for b in got for n in b["lines"]]
+
+
+def test_a_page_of_few_lines_or_many_sizes_is_no_plain_page_and_a_lone_word_is_its_heading():
+    assert layout.plain_groups(lines_of(BODY[:5])) is None
+    mixed = [
+        ([150, 100 + 40 * i, 840, 100 + 40 * i + (16 if i % 2 else 40)], "TOYS AND FANCY GOODS") for i in range(14)
+    ]
+    assert layout.plain_groups(lines_of(mixed)) is None
+    got = layout.plain_groups(lines_of([([400, 100, 580, 116], "PREFACE."), *BODY]))["blocks"]
+    assert got[0] == {"lines": [1], "role": "heading"}
+
+
+def test_a_plain_layout_asks_no_model():
+    run = run_with(**{"page-build": draw})
+    got = layout.read_layout("/p.png", OCR, "opus", 300, run, {"blocks": [{"lines": [1], "role": "body"}]})
+    assert got["model"] == layout.PLAIN
+    assert [c[0] for c in run.calls] == ["page-build", "page-build"]
+
+
+def test_a_books_shortlist_is_sent_and_no_proposer_asked():
+    run = run_with(
+        **{
+            "page-build": {"text": "1 b1 [0,0,1,1] x"},
+            "font-match": {"proposed": ["a", "b"]},
+            "vision-language": {"json": {"lines": []}},
+        }
+    )
+    ocr = {**OCR, "layout": {"groups": {"a": 1}}}
+    assert layout.rebuild_page("/p.png", ocr, "/o.pdf", 300, None, run, "", None, ["a", "b"]) == ["a", "b"]
+    asked = next(c[1] for c in run.calls if c[0] == "font-match")
+    assert (asked["candidates"], asked["propose"]) == (["a", "b"], False)
+    layout.rebuild_page("/p.png", ocr, "/o.pdf", 300, None, run, "")
+    assert "candidates" not in [c[1] for c in run.calls if c[0] == "font-match"][-1]
