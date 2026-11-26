@@ -77,7 +77,10 @@ class Verdict:
 def unbroken(text: str) -> str:
     """Words split at a line end joined: a hyphen there (pdfium gives it as U+FFFE) is the printer's, and the two texts do not split alike. A
     hyphened compound is one word too."""
-    joined = re.sub(r"[-­￾][ \t]*\r?\n[ \t]*", "", text.replace("\u2019", "'"))
+    text = (
+        text.replace("\u2019", "'").replace("\u2010", "-").replace("\u2011", "-")
+    )  # Unicode's hyphens are the hyphen (review)
+    joined = re.sub(r"[-­￾][ \t]*\r?\n[ \t]*", "", text)
     # a hyphen inside a line joins its compound the same way in both texts: pdfium gives some as U+FFFE ("two-hundred", "extem-pore": 2026-11-26)
     # and a reading that kept a line-end hyphen but not the line break ("etymo- logy") joins it as the PDF does
     return (

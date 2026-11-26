@@ -8,7 +8,7 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 Jonathan: look into the 17 pages of the 1828 book the gate kept as scans. 14 were faults of this app's own making, 3 the gate rightly caught.
 - `rows.py` `tidy`: a footnote's mark or a bracket just left of its row ("* He uses general terms", "‡ The title") is kept; only a mark with no letters and none of `MARKS` (the frame read as "|") goes. It had dropped them, and on one page took the running head's box with it, which was then drawn twice.
 - `layout.py` `with_corrected`: a word the corrected text has with a reference mark the line fix lacks ("Faustus," for "Faustus,†") takes the mark.
-- `gate.py` `unbroken`: a hyphen inside a line joins its compound as a line-end one does (pdfium gives some as U+FFFE: "two-hundred", "extem-pore"), and so does one followed by a space ("etymo- logy", as a reading may give it).
+- `gate.py` `unbroken`: a hyphen inside a line joins its compound as a line-end one does (pdfium gives some as U+FFFE: "two-hundred", "extem-pore"), and so does one followed by a space ("etymo- logy", as a reading may give it); U+2010 and U+2011 are the hyphen (review).
 - The 17 pages rebuilt with these, in a scratch copy: 12 pass. Of the other 5, four lack a symbol (a "†" the line fix read as "+", "]" at two line ends) and one is a stained page whose lines came out squashed; one more (page 123) fails on ink against a pale scan though it looks right.
 - `tests/unit/test_rows.py`, `test_layout.py`, `test_gate.py`.
 

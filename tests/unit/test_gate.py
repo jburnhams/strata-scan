@@ -157,4 +157,6 @@ def test_a_hyphened_compound_is_one_word_however_the_pdf_writes_its_hyphen():
     )
     assert gate.words("the appel-\nlative names") == gate.words("the appellative names")
     assert gate.words("in its etymo- logy from") == gate.words("in its etymo\ufffelogy from")
+    assert gate.lost_words("he was two-hundred years old", "he was two\u2010hundred years old")[0] == 0.0
+    assert gate.lost_words("he was two-hundred years old", "he was two\u2011hundred years old")[0] == 0.0
     assert gate.words("Act II - Scene") == {"act": 1, "ii": 1, "scene": 1}
