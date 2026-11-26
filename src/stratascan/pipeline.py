@@ -721,8 +721,10 @@ class Runner:
         out = files.rebuilt_pdf(page.book_id, page.id)
         high, wide = read_image(png).shape[:2]
         made: dict[str, Any] = {}
-        if page.kind == "blank":
-            boxes = []  # what the page finder saw on a blank page is show-through and specks; a mark on it is lifted below
+        if page.kind != "picture":
+            # what the reader boxed on a page with no print is show-through, specks or handwriting: lifted below onto white, not cut with
+            # its paper (an inscription on the 1828 book's endpaper came out on a cream box)
+            boxes = []
         if page.kind == "cover" or marks.dark(png):  # a picture found on the book photographed is the book itself
             made["whole"] = made["book"] = True  # the book photographed: a cover, its spine, its edges
         elif not boxes:
