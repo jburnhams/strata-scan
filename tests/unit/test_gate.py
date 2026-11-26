@@ -160,3 +160,15 @@ def test_a_hyphened_compound_is_one_word_however_the_pdf_writes_its_hyphen():
     assert gate.lost_words("he was two-hundred years old", "he was two\u2010hundred years old")[0] == 0.0
     assert gate.lost_words("he was two-hundred years old", "he was two\u2011hundred years old")[0] == 0.0
     assert gate.words("Act II - Scene") == {"act": 1, "ii": 1, "scene": 1}
+
+
+def test_a_warped_page_whose_lines_sit_a_little_off_passes_once_each_line_may_move(tmp_path):
+    lines = [(30, 60 + 30 * i, "the minute fidelity of the puppets to the") for i in range(10)]
+    warped = [(x + (4 if i % 2 else -4), y + (3 if i % 3 else -3), t) for i, (x, y, t) in enumerate(lines)]
+    png = scan_png(tmp_path / "s.png", text_pdf(tmp_path / "s.pdf", warped))
+    pdf = text_pdf(tmp_path / "r.pdf", lines)
+    blocks = blocks_of(lines)
+    straight = gate.text_ink(pdf, png, blocks, DPI)
+    moved = gate.text_ink(pdf, png, blocks, DPI, 12)
+    assert moved > gate.SHIFTED > straight
+    assert gate.text_ink(pdf, png, [], DPI, 12) == 1.0

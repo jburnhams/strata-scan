@@ -1,5 +1,6 @@
-"""The quality gate on a page set again in type: whether the rebuilt page may stand in the finished PDF in place of its scan. A page that fails
-keeps its scan (with the searchable text under it), so the finished PDF is always complete and never worse than the scans.
+"""The quality gate on a page set again in type: whether the rebuilt page is good, or is to be looked at. A page that fails is set again by
+other routes (pipeline: the lines put on their rows, another reader), and if none passes it keeps its first setting and is listed to look at:
+the finished PDF has no scans but its blanks and covers (Jonathan, 2026-11-26; until then a failed page kept its scan).
 
 Four checks, each with its mark (Jonathan, 2026-11-24, set on 14 of the hardest pages of two books; test them on others before trusting the
 numbers, they were chosen knowing which of those pages looked right):
@@ -37,6 +38,7 @@ from numpy.typing import NDArray
 LOST = 0.01  # share of the corrected text's words
 OVERLAP = 0.01  # share of the characters
 INK = 0.70
+SHIFTED = 0.73  # the bar for ink once each line may move a little (`text_ink`'s shift)
 SIZE = 1.25  # set on book 1's 25 rebuilt pages (2026-11-25): flags the four with a line too big by eye and page 7, and no other
 ROW = 1.8  # a line's words of three letters or more; small capitals beside capitals differ by about 1.3
 # a symbol the two texts may spell differently without being wrong: curly quotes, dashes and hyphens, and the marks dust and broken type make
@@ -325,8 +327,10 @@ def scan_width(png: str) -> float:
     return float(scan.shape[1])
 
 
-def text_ink(pdf: str, png: str, blocks: list[dict[str, Any]], dpi: float) -> float:
-    """How well the rebuilt page's ink agrees with the scan's, on the text's own lines (the figures and the paper are not the rebuild's)."""
+def text_ink(pdf: str, png: str, blocks: list[dict[str, Any]], dpi: float, shift: int = 0) -> float:
+    """How well the rebuilt page's ink agrees with the scan's, on the text's own lines (the figures and the paper are not the rebuild's). With
+    `shift` (pixels), each line's ink is compared where it agrees best within that many pixels either way: a warped or curled page puts its
+    printed lines a little off the straight ones a rebuild sets."""
     scan = cv2.imread(png, cv2.IMREAD_GRAYSCALE)
     if scan is None:
         raise ValueError("the page's picture could not be read")
@@ -340,11 +344,42 @@ def text_ink(pdf: str, png: str, blocks: list[dict[str, Any]], dpi: float) -> fl
         doc.close()
     drawn = drawn.reshape(drawn.shape[:2])
     got = np.asarray(cv2.resize(drawn, (w, h)) < 128, dtype=np.bool_)
-    where = np.zeros((h, w), dtype=np.bool_)
-    for b in blocks:
-        for x, y, bw, bh in cast("list[list[float]]", b.get("lines") or []):
-            where[max(0, int(y - 4)) : max(0, int(y + bh + 4)), max(0, int(x - 4)) : max(0, int(x + bw + 4))] = True
-    return ink_f1(ink_of(gray, dpi), got, max(1, round(dpi / 250)), where)
+    want = ink_of(gray, dpi)
+    tol = max(1, round(dpi / 250))
+    boxes = [
+        (max(0, int(y - 4)), max(0, int(y + bh + 4)), max(0, int(x - 4)), max(0, int(x + bw + 4)))
+        for b in blocks
+        for x, y, bw, bh in cast("list[list[float]]", b.get("lines") or [])
+    ]
+    if not shift:
+        where = np.zeros((h, w), dtype=np.bool_)
+        for y0, y1, x0, x1 in boxes:
+            where[y0:y1, x0:x1] = True
+        return ink_f1(want, got, tol, where)
+    k = np.ones((2 * tol + 1, 2 * tol + 1), np.uint8)
+    hit_got = hit_want = n_got = n_want = 0.0
+    for y0, y1, x0, x1 in boxes:
+        ref = want[y0:y1, x0:x1]
+        near_ref = cv2.dilate(ref.astype(np.uint8), k) > 0
+        best: tuple[float, float, float] | None = None
+        for dy in range(-shift, shift + 1, 2):
+            for dx in range(-shift, shift + 1, 2):
+                if y0 + dy < 0 or x0 + dx < 0:
+                    continue
+                part = got[y0 + dy : y1 + dy, x0 + dx : x1 + dx]
+                if part.shape != ref.shape:
+                    continue
+                p = float((part & near_ref).sum())
+                r = float((ref & (cv2.dilate(part.astype(np.uint8), k) > 0)).sum())
+                if best is None or p + r > best[0] + best[1]:
+                    best = (p, r, float(part.sum()))
+        if best is not None:
+            hit_got, hit_want, n_got = hit_got + best[0], hit_want + best[1], n_got + best[2]
+            n_want += float(ref.sum())
+    if not n_got and not n_want:
+        return 1.0
+    p, r = hit_got / max(n_got, 1.0), hit_want / max(n_want, 1.0)
+    return 2 * p * r / (p + r) if p + r else 0.0
 
 
 def check_page(
@@ -371,8 +406,16 @@ def check_page(
         reasons.append(f"{over:.1%} of the characters lie over others")
     if off:
         reasons.append(f"{off} characters are off the page")
-    if ink < INK:
-        reasons.append(f"its ink agrees with the scan's only {ink:.0%}")
+    shifted = None
+    if INK - 0.05 <= ink < INK:
+        # a warped page: its lines a little off the rebuild's straight ones (the 1828 book's page 123, 2026-11-26). The bar is higher once they
+        # may move: a stained page whose lines came out squashed reached 0.705 so, and of both books' 166 pages none that passed fell below 0.72
+        shifted = text_ink(pdf, png, blocks, dpi, max(2, round(dpi / 60)))
+    if ink < INK and (shifted is None or shifted < SHIFTED):
+        reasons.append(
+            f"its ink agrees with the scan's only {ink:.0%}"
+            + (f" ({shifted:.0%} with its lines let move)" if shifted else "")
+        )
     if missing:
         reasons.append("symbols are missing: " + " ".join(missing[:8]))
     if sized:

@@ -248,3 +248,39 @@ def test_a_reference_mark_the_line_fix_missed_is_put_in_from_the_corrected_text(
     got = layout.with_corrected({}, "Dr. Faustus,\u2020 the Queen\nof Sheba, and", context)["lines"]
     assert got == [{"n": 1, "text": "Dr. Faustus,\u2020 the Queen"}]
     assert not layout.same_word("Faustus,", "Faustus;")
+
+
+def test_a_footnote_mark_read_as_a_plus_takes_the_corrected_texts_mark():
+    context = "1 b1 [0,0,1,1] + Vol. iv. p. 427"
+    got = layout.with_corrected({}, "\u2020 Vol. iv. p. 427", context)["lines"]
+    assert got == [{"n": 1, "text": "\u2020 Vol. iv. p. 427"}]
+    assert not layout.same_word("\u2020", "*")  # one mark for another: the line fix may be right
+    assert not layout.same_word("-", "\u2014")
+    assert layout.same_word("again.", "again.]")
+
+
+def test_a_picture_page_is_its_pictures_on_clean_paper(tmp_path):
+    from PIL import Image
+
+    png = tmp_path / "p.png"
+    Image.new("L", (1000, 2000), 200).save(png)
+    run = run_with(**{"page-build": {}})
+    layout.picture_page(str(png), [(100, 200, 500, 400)], str(tmp_path / "o.pdf"), 300, run)
+    role, params, model = run.calls[0]
+    assert (role, model) == ("page-build", layout.DRAW)
+    (figure,) = params["groups"]["figures"]
+    assert figure["box"] == [100.0, 100.0, 600.0, 300.0]
+    assert Image.open(figure["image"]).mode == "L"  # an engraving in grey on white
+    assert params["rules"]
+    assert params["ocr"]["lines"] == []
+    layout.picture_page(str(png), [], str(tmp_path / "b.pdf"), 300, run)  # nothing on it: a true blank
+    assert run.calls[-1][1]["groups"]["figures"] == []
+    colour = tmp_path / "c.png"
+    im = Image.new("RGB", (400, 400), (230, 215, 180))
+    im.paste((200, 30, 30), (100, 100, 300, 300))
+    im.save(colour)
+    out = layout.cut_picture(str(colour), (50, 50, 300, 300), str(tmp_path / "cut.png"))
+    assert Image.open(out).mode == "RGB"
+    assert Image.open(out).getpixel((150, 150))[1] < 80  # still red
+    assert Image.open(out).getpixel((10, 10)) == (255, 255, 255)  # the paper made white
+    assert layout.inked_share(str(colour)) == pytest.approx(0.25, abs=0.02)

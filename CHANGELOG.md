@@ -4,6 +4,16 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-26
 
+**No scans in the finished PDF: blanks as true blanks, covers and patterns kept whole, pictures on clean paper, every text page in type; the last Collier faults (branch `last-pages`)**
+Jonathan: fix the remaining failures, falling back to other techniques for the hard ones; the only scans he wants are blanks and covers; then: blanks should be true blanks, and the rest neatly set with borders and blank areas drawn, only pictures and patterns kept from the scan.
+- `layout.py`: a footnote mark Tesseract read as "+" takes the corrected text's ("+ Vol. iv." for "\u2020 Vol. iv."), and a bracket it left off a line end is put back ("again." for "again.]"). `picture_page` and `cut_picture`: a page with no text is its pictures cut from the scan onto clean paper (grey for an engraving, in colour for a coloured print), its rules drawn, or a blank of its size; `inked_share` tells a pattern (marbled paper) from a blank leaf. A failed line fix no longer stops a page: the corrected text's words are set.
+- `gate.py`: ink between 0.65 and 0.70 is measured again with each line free to move a few pixels (`text_ink`'s `shift`), and passes at 0.73 (`SHIFTED`): a warped page sits a little off the straight lines a rebuild sets. On both books' 166 set pages it changes only the 1828 book's page 123 (0.68, 0.74 so) and keeps its stained page 106 out (0.67, 0.70).
+- `pipeline.py`: the rebuild sets every page but a skipped one (`typeset`: text pages in type, any other as its pictures, its pattern, the whole cover, or a blank). A text page that fails both routes is read again by another reader (`READER`, docTR's boxes with Claude Haiku's text) and set from that if it passes; one that fails every route keeps its first setting, listed to look at. A text page whose layout could not be read is laid out from its own lines.
+- `export.py`: every page set again stands in the finished PDF. `web/`: "Look at type" for a page that failed the checks; the finished PDF's description.
+- Needs strata-models' page-build to draw a picture it is given (strata-models PR "page-build: a figure's own picture").
+- The 1828 book's last six faults, rebuilt in scratch: five pass; page 106 (a stain: four lines set squashed, a font-fit fault) fails every route and is set and listed.
+- `tests/unit/test_layout.py`, `test_gate.py`, `test_pipeline.py`, `web/tests/`.
+
 **Footnote marks kept, and hyphened words counted alike (branch `gate-fixes`)**
 Jonathan: look into the 17 pages of the 1828 book the gate kept as scans. 14 were faults of this app's own making, 3 the gate rightly caught.
 - `rows.py` `tidy`: a footnote's mark or a bracket just left of its row ("* He uses general terms", "‡ The title") is kept; only a mark with no letters and none of `MARKS` (the frame read as "|") goes. It had dropped them, and on one page took the running head's box with it, which was then drawn twice.
