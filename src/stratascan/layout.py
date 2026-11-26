@@ -240,6 +240,87 @@ def read_layout(
     return {"model": model, "groups": groups, "blocks": blocks}
 
 
+COLOUR = 40  # median saturation (0-255) of a picture's ink above which it is a coloured print, kept in colour
+INKED = (
+    0.03  # share of a page with no print or picture that is ink above which it is a pattern (marbled paper) kept whole
+)
+
+
+def cut_picture(png: str, box: tuple[int, int, int, int], out: str) -> str:
+    """The picture at `box` (page pixels) cut from the scan with its paper made white: a black-and-white engraving in grey, a coloured print
+    in colour (each channel over the paper's own tone, the 90th percentile). Written to `out`; its path."""
+    import numpy as np
+    from PIL import Image
+
+    npa: Any = np  # numpy's percentile, clip and median overloads are partially unknown to pyright
+
+    x, y, w, h = box
+    with Image.open(png) as im:
+        part = im.convert("RGB").crop((x, y, x + w, y + h))
+    rgb = np.asarray(part, dtype=np.float32)
+    hsv = np.asarray(part.convert("HSV"), dtype=np.float32)
+    grey = rgb.mean(axis=2)
+    inked = grey < 0.85 * float(npa.percentile(grey, 90))
+    coloured = bool(inked.any()) and float(npa.median(hsv[..., 1][inked])) > COLOUR
+    if coloured:
+        paper = np.maximum(npa.percentile(rgb.reshape(-1, 3), 90, axis=0), 1.0)
+        img = Image.fromarray(npa.clip(rgb * (255.0 / paper), 0, 255).astype(np.uint8), "RGB")
+    else:
+        img = Image.fromarray(
+            npa.clip(grey * (255.0 / max(float(npa.percentile(grey, 90)), 1.0)), 0, 255).astype(np.uint8), "L"
+        )
+    img.save(out)
+    return out
+
+
+def picture_page(
+    png: str,
+    boxes: list[tuple[int, int, int, int]],
+    out: str,
+    dpi: int,
+    run: RunFn = models_run,
+    crops: str | None = None,
+) -> None:
+    """A page with no text set again: its pictures (page pixels [x, y, w, h]) cut from the scan onto clean paper, in colour when printed in
+    colour (`cut_picture`, into the folder `crops`), its rules drawn; no pictures, a blank page of its size (Jonathan, 2026-11-26: blanks as
+    true blanks, only pictures and patterns kept from the scan)."""
+    from PIL import Image
+
+    with Image.open(png) as im:
+        wide, high = im.size
+    folder = crops or os.path.dirname(out)
+    figures = [
+        {
+            "box": [1000 * x / wide, 1000 * y / high, 1000 * (x + w) / wide, 1000 * (y + h) / high],
+            "kind": "figure",
+            "image": cut_picture(png, (x, y, w, h), os.path.join(folder, f"{os.path.basename(out)}.{k}.png")),
+        }
+        for k, (x, y, w, h) in enumerate(boxes)
+    ]
+    params: dict[str, Any] = {
+        "ocr": {"width": wide, "height": high, "lines": []},
+        "groups": {"blocks": [], "figures": figures},
+        "image": png,
+        "dpi": dpi,
+        "out": out,
+        "png": False,
+        "rules": bool(boxes),
+    }
+    run("page-build", params, DRAW)
+
+
+def inked_share(png: str) -> float:
+    """The share of the page that is ink (darker than 0.6 of its paper): a marbled endpaper is mostly ink, a blank leaf with show-through almost none."""
+    import numpy as np
+    from PIL import Image
+
+    npa: Any = np  # numpy's percentile, clip and median overloads are partially unknown to pyright
+
+    with Image.open(png) as im:
+        g = np.asarray(im.convert("L").reduce(4), dtype=np.float32)
+    return float((g < 0.6 * float(npa.percentile(g, 90))).mean())
+
+
 def rebuild_page(
     png: str,
     ocr: Mapping[str, Any],
@@ -263,9 +344,11 @@ def rebuild_page(
     base = plain(ocr)
     context = numbered(ocr, run)
     if typed is None:
-        texts = with_corrected(
-            answer_json(run("vision-language", text_params(png, context), TEXT_MODEL)), corrected or "", context
-        )
+        try:
+            fixed = answer_json(run("vision-language", text_params(png, context), TEXT_MODEL))
+        except LayoutError:
+            fixed = {}  # no line fix: the corrected text's words put right what they can, and the page is set all the same
+        texts = with_corrected(fixed, corrected or "", context)
     else:
         texts = typed_texts(typed, context)
     asked: dict[str, Any] = {"mode": "fit", "lines": base.get("lines") or [], "image": png, "dpi": dpi}
@@ -393,15 +476,20 @@ def with_left_out(laid: dict[str, Any], context: str, ocr: Mapping[str, Any]) ->
     return dict(laid, groups=dict(groups, blocks=blocks), blocks=seen)
 
 
-MARKS = frozenset("*\u2020\u2021\u00a7\u00b6\u2016")  # reference marks: a footnote's, which a reading often misses
+NOTES = frozenset("*\u2020\u2021\u00a7\u00b6\u2016")  # reference marks: a footnote's, which a reading often misses
+MARKS = NOTES | frozenset("[]")  # and a bracket closing a stage direction, which Tesseract leaves out at a line end
 
 
 def same_word(old: str, new: str) -> bool:
     """Whether `new` may stand for `old`: they differ, and neither holds much more than the other (two words the OCR ran together, half a word)."""
     a, b = letters(old), letters(new)
     if (
+        not a and not b
+    ):  # a footnote's mark misread as another sign ("+" for "\u2020", 2026-11-26): the corrected text's
+        return old != new and bool(set(new) & NOTES) and not set(old) & NOTES
+    if (
         a and a == b
-    ):  # the same word with a mark the reading missed ("Faustus," for "Faustus,\u2020"): the corrected text's has it
+    ):  # the same word with a mark the reading missed ("Faustus," for "Faustus,\u2020", "again." for "again.]")
         return bool(set(new) & MARKS - set(old))
     return bool(a and b) and a != b and 0.75 * len(a) <= len(b) <= 1.4 * len(a)
 

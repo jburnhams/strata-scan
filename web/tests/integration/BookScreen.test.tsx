@@ -21,7 +21,7 @@ describe('Book', () => {
     openApp('/books/1')
     const list = await screen.findByRole('list', { name: 'Pages in reading order' })
     expect(within(list).getAllByText('Set in type')).toHaveLength(1)
-    expect(within(list).getByText('Scan kept')).toHaveAttribute('title', 'symbols are missing: †')
+    expect(within(list).getByText('Look at type')).toHaveAttribute('title', 'symbols are missing: †')
   })
 
   it('shows the work running, with its progress', async () => {

@@ -334,7 +334,7 @@ def test_a_text_page_is_laid_out_and_set_again(make_book, fake_models, monkeypat
     assert not os.path.isfile(files.export(b, "book-rebuilt.pdf"))
 
 
-def test_the_finished_pdf_has_the_pages_that_pass_and_the_scans_of_those_that_do_not(make_book, fake_models):
+def test_the_finished_pdf_sets_every_page_and_one_that_fails_is_flagged(make_book, fake_models):
     """Every rebuilt page goes through the real gate, worst read first: one that says and shows what its scan does stands in the finished PDF (the
     stand-in "sets" a page as Tesseract's own PDF of it, its picture over its words), and a page whose words were not drawn keeps its scan."""
     from books import tesseract_ocr
@@ -364,12 +364,14 @@ def test_the_finished_pdf_has_the_pages_that_pass_and_the_scans_of_those_that_do
     by_id = {p.id: p for p in pages_of(b)}
     assert by_id[worst.id].ocr["gate"]["passed"] is False
     assert by_id[worst.id].ocr["gate"]["reasons"][0].startswith("100.0% of the words are missing")
-    assert export.stands(b, by_id[worst.id]) is False
+    assert export.stands(b, by_id[worst.id]) is True  # set all the same, its best try: only blanks and covers are scans
     good = [by_id[p.id] for p in texts if p.id != worst.id]
     assert [(p.ocr["gate"]["reasons"], export.stands(b, p)) for p in good] == [([], True)] * len(good)
     finished = PdfReader(files.export(b, "book-rebuilt.pdf")).pages
     assert len(finished) == len([p for p in by_id.values() if p.kind != "skip"])
-    assert all(p.mediabox.width != 100 for p in finished)  # the stand-in's blank 100-point page is not among them
+    assert all(
+        os.path.isfile(files.rebuilt_pdf(b, p.id)) for p in by_id.values()
+    )  # every page set again: none left a scan
 
 
 def test_a_page_that_fails_is_set_again_from_its_rows_and_kept_only_when_it_passes(make_book, fake_models):
@@ -429,9 +431,18 @@ def test_a_layout_that_fails_leaves_the_page_read_and_says_why(make_book, fake_m
     texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"]]
     assert texts
     assert all("not JSON" in p.ocr["layout"]["error"] and p.text for p in texts)
-    r.run(pipeline.Task(b, ("rebuild",)))
+    r.run(pipeline.Task(b, ("rebuild",)))  # laid out from their own lines instead, and set in type all the same
     with store.session() as s:
-        assert "could not be set again: the model's answer was not JSON" in s.get(Book, b).error
+        assert s.get(Book, b).error is None
+    assert all(os.path.isfile(files.rebuilt_pdf(b, p.id)) for p in texts)
+    drawn = [
+        j["params"] for j in fake_models.jobs if j["role"] == "page-build" and j["params"].get("font_fit") is not None
+    ]
+    with store.session() as s:
+        pictured = set(s.scalars(select(Figure.page_id).join(Page).where(Page.book_id == b)))
+    assert any(d["groups"]["figures"] for d in drawn) is bool(
+        pictured & {p.id for p in texts}
+    )  # its pictures kept (review)
     pipeline.Runner(ocr=tesseract_ocr, correct=None, run_model=None).run(pipeline.Task(b, ("rebuild",)))
     with store.session() as s:
         assert "strata-models is not set up" in s.get(Book, b).error
@@ -440,8 +451,15 @@ def test_a_layout_that_fails_leaves_the_page_read_and_says_why(make_book, fake_m
 def test_a_rebuild_needs_read_pages_and_a_stop_in_it_is_finished_not_restarted(make_book, runner):
     b = make_book()
     runner.run(pipeline.Task(b, ("import", "detect")))
-    with pytest.raises(pipeline.StageError, match="read the book first"):
-        runner.stage_rebuild(b)
+    with pytest.raises(
+        pipeline.StageError, match="strata-models is not set up"
+    ):  # pages never read are still set, as pictures or blanks
+        runner.rebuild_one(pages_of(b)[0])
+    unread = pages_of(b)[0]
+    pipeline.Runner(ocr=runner.ocr, correct=None, run_model=lambda role, params, model: {}).rebuild_one(unread)
+    assert (
+        next(p for p in pages_of(b) if p.id == unread.id).ocr is None
+    )  # still unread: its first reading guesses its kind (review)
     assert pipeline.resume_from("rebuild") == ("rebuild", "export")
     assert pipeline.resume_from("read") == ("read", "export")
     assert pipeline.resume_from("???") == ("detect", "read")
@@ -536,3 +554,42 @@ def test_a_books_plain_pages_share_the_font_shortlist_of_its_first_ones(make_boo
     assert all(a == ["caslon", "bodoni", "baskerville"] for a in asked[pipeline.SAMPLE :])
     kinds = [p.ocr["type"]["asked"] for p in pages_of(b) if p.kind == "text"]
     assert kinds.count(True) == pipeline.SAMPLE
+
+
+def test_a_page_that_fails_both_ways_is_read_again_by_another_reader_and_kept_only_when_it_passes(
+    make_book, fake_models
+):
+    """Every first setting lacks its words, and the rows find nothing to put right; the reader's setting is the page as Tesseract's PDF of it,
+    but for one page whose reader's setting lacks them too."""
+    from books import tesseract_ocr
+
+    answers = models_answers(fake_models)
+    fake_models.results = answers
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
+    b = make_book()
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"]]
+    assert len(texts) > 1
+    bad = texts[0].id
+    draw, asked = answers["page-build"], []
+
+    def page_build(params):
+        got = draw(params)
+        out = os.path.basename(params.get("out", ""))
+        if params.get("font_fit") and out.endswith(".reader.pdf") and not out.startswith(f"{bad}."):
+            shutil.copyfile(files.ocr_pdf(b, int(out.split(".")[0])), params["out"])
+        return got
+
+    def ocr(params):
+        asked.append(params["path"])
+        assert "dpi" not in params  # docTR refuses Tesseract's params
+        return tesseract_ocr(params["path"], params["path"] + ".x.pdf", "eng", 300)
+
+    fake_models.results = {**answers, "page-build": page_build, "ocr": ocr}
+    r.run(pipeline.Task(b, ("rebuild",)))
+    by_id = {p.id: p for p in pages_of(b)}
+    assert len(asked) == len(texts)
+    assert [j["model"] for j in fake_models.jobs if j["role"] == "ocr"] == [pipeline.READER] * len(texts)
+    for p in texts:
+        assert by_id[p.id].ocr["gate"]["passed"] is (p.id != bad)
+        assert not os.path.exists(files.rebuilt_pdf(b, p.id) + ".reader.pdf")

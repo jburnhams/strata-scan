@@ -40,7 +40,7 @@ export const fileWords: Record<FileName, { title: string; description: string }>
   'book.md': { title: 'Markdown', description: 'The text in paragraphs, running heads dropped, pictures where they stand.' },
   'book.txt': { title: 'Plain text', description: 'Every page’s text as it was read or typed, page by page.' },
   'book.pdf': { title: 'Searchable PDF', description: 'The pages as pictures with their text behind them, to search and copy.' },
-  'book-rebuilt.pdf': { title: 'Finished PDF', description: 'The pages set again in matching type where they pass the checks; every other page as its scan.' },
+  'book-rebuilt.pdf': { title: 'Finished PDF', description: 'Every page set again: text in matching type, pictures on clean paper, blanks as blank pages. Only pictures, patterns and covers come from the scan.' },
   'book.zip': { title: 'Everything', description: 'The files above and the pictures, in one zip.' },
 }
 
@@ -55,7 +55,7 @@ export function describeWork(b: Book, pages: PageSummary[] | undefined): string 
   if (look.length) return `${format.count(look.length, 'page')} need a look: the page finder was unsure where ${look.length === 1 ? 'it is' : 'they are'}. ${pageName(look[0])} is first.`
   if (!b.files?.['book.md']) return `${describeBook(b)} The files are not made yet.`
   const set = pages?.filter(p => p.gate) ?? []
-  const type = set.length ? ` ${format.count(set.filter(p => p.gate!.passed).length, 'page')} set in type, ${format.count(set.filter(p => !p.gate!.passed).length, 'page')} kept as scans by the checks.` : ''
+  const type = set.length ? ` ${format.count(set.filter(p => p.gate!.passed).length, 'page')} set in type, ${format.count(set.filter(p => !p.gate!.passed).length, 'page')} to look at: the checks found faults.` : ''
   return `${describeBook(b)}${type} The files are up to date as of ${format.dateTime(new Date(Math.max(...Object.values(b.files)) * 1000))}.`
 }
 
@@ -154,7 +154,7 @@ export function Pages({ pages }: { pages: Load<PageSummary[]> }) {
                 </Thumbnail>
                 <span className="truncate text-foreground">{pageName(p)}</span>
                 <span>{p.kind === 'text' ? format.count(p.words, 'word') : p.kind}{p.figures ? `, ${format.count(p.figures, 'picture')}` : ''}</span>
-                {p.gate && <span title={p.gate.reasons.join('; ') || undefined}>{p.gate.passed ? 'Set in type' : 'Scan kept'}</span>}
+                {p.gate && <span title={p.gate.reasons.join('; ') || undefined}>{p.gate.passed ? 'Set in type' : 'Look at type'}</span>}
               </Link>
             </li>
           ))}

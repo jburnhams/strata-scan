@@ -4,8 +4,9 @@
                break is not a paragraph), words split at a line end with a hyphen joined again, running heads left out
     book.txt   each page's text as it is printed, line for line, under a page marker: for checking and for searching
     book.pdf   every page as drawn, with its text under it (the ocr role's PDF pages joined), so it can be searched and copied
-    book-rebuilt.pdf   the finished PDF: the same book with the pages set again in type (pipeline.stage_rebuild) that passed the checks
-               (gate.py) in place of their pictures, and every other page as its scan; only when pages were set again
+    book-rebuilt.pdf   the finished PDF: the same book with every page set again (pipeline.stage_rebuild: text pages in type, any other as
+               its pictures on clean paper, its pattern or cover whole, or a true blank) in place of its scan. A page that failed the
+               checks (gate.py) keeps its first setting, and the Book screen lists it to look at. Only when pages were set
     figures/   every picture as a PNG, named by page (p011-1.png)
     book.zip   all of the above
 
@@ -250,9 +251,9 @@ def add_scan_page(pdf: PdfWriter, book_id: int, p: Page, dpi: int) -> None:
 
 
 def stands(book_id: int, p: Page) -> bool:
-    """Whether the page's type is in the finished PDF: it was set again and passed the gate (a verdict missing is not a pass)."""
-    record = cast("dict[str, Any]", (p.ocr or {}).get("gate") or {})
-    return bool(record.get("passed")) and os.path.isfile(files.rebuilt_pdf(book_id, p.id))
+    """Whether the page is set again in the finished PDF: whenever it was (Jonathan, 2026-11-26: the only scans in the output are blanks and
+    covers). A page that failed the gate keeps its best setting, and the Book screen lists it to look at."""
+    return os.path.isfile(files.rebuilt_pdf(book_id, p.id))
 
 
 def write_all(book_id: int, progress: Callable[[int, int], None] | None = None) -> dict[str, str]:

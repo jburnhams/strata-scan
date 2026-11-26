@@ -91,7 +91,7 @@ describe('the findings', () => {
     const sure = wardPages.map(p => ({ ...p, hand: true }))
     expect(describeWork(ward, sure)).toMatch(/^44 pages, 44 read, 14 pictures\. 3 pages need a look\. The files are up to date as of /)
     const gated = sure.map((p, i) => (i < 3 ? { ...p, gate: { passed: i > 0, reasons: i ? [] : ['2.6% of the words are missing'] } } : p))
-    expect(describeWork(ward, gated)).toMatch(/2\spages set in type, 1\spage kept as scans by the checks\. The files are/)
+    expect(describeWork(ward, gated)).toMatch(/2\spages set in type, 1\spage to look at: the checks found faults\. The files are/)
     expect(describeWork({ ...ward, files: {} }, sure)).toMatch(/The files are not made yet\.$/)
     expect(describeWork(collier, undefined)).toBe('Reading page 97 of 206.')
     expect(describeWork({ ...ward, pages: 0 }, [])).toMatch(/^No pages yet/)

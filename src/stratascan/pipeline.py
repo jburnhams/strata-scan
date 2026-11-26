@@ -5,7 +5,8 @@
     read     each page is read by strata-models' `ocr` role (lines, words, a searchable PDF page), its pictures found (figures.py) and cut out,
              and its kind guessed (text, picture, blank, cover)
     rebuild  (only when asked) each text page is set again in matching type (layout.rebuild_page) and checked (gate.check_page): a page that
-             fails keeps its scan in the finished PDF
+             fails is tried by other routes and, failing those, kept as set and listed to look at; each picture page is its pictures cut
+             onto clean paper
     export   the book's files are written (export.py)
 
 A stage works on the whole book or on some pages (`pages`: after a person moves a crop, only that page is drawn and read again). Hand work
@@ -110,6 +111,7 @@ def plausible(before: str, after: str) -> bool:
     return b > 0 and 0.7 * a <= b <= 1.3 * a + 20
 
 
+READER = "doctr-haiku-fix"  # the last route's reader: docTR's word boxes, Claude Haiku's text (strata-models, eval ocr-lines)
 SAMPLE = 3  # plain pages of a book whose font shortlist is asked for before the rest share theirs
 SHORTLIST = 4  # faces in a shared shortlist: as many as the proposer names for a page
 
@@ -610,14 +612,15 @@ class Runner:
 
     def stage_rebuild(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
         with store.session() as s:
-            q = select(Page).where(Page.book_id == book_id, Page.kind == "text", Page.ocr.is_not(None))
+            # every page but a skipped one: the only scans a finished book keeps are its pictures and patterns (Jonathan, 2026-11-26)
+            q = select(Page).where(Page.book_id == book_id, Page.kind != "skip")
             if pages is not None:
                 q = q.where(Page.id.in_(pages))
-            todo = [p for p in s.scalars(q.order_by(Page.position)) if (p.ocr or {}).get("lines")]
+            todo = list(s.scalars(q.order_by(Page.position)))
         # the worst read first (stable, so reading order among equals): whoever looks while it runs sees the pages most likely to fail the gate
         todo.sort(key=lambda p: p.ocr_conf if p.ocr_conf is not None else 100.0)
         if not todo:
-            raise StageError("there are no read text pages to set again: read the book first")
+            raise StageError("the book has no pages to set again: find them first")
         # one at a time: a type fit is minutes of CPU and the heaviest job strata-models runs for this app (fourteen queued pages once ran the
         # service out of memory, 2026-11-24)
         with self.queued_ahead(
@@ -630,16 +633,33 @@ class Runner:
     def rebuild_one(self, page: Page) -> None:
         if self.run_model is None:
             raise StageError("strata-models is not set up")
+        if not typeset(page):
+            self.rebuild_picture(page)
+            return
         png = files.page_png(page.book_id, page.id)
         if not os.path.isfile(png):
             render(page)
         out = files.rebuilt_pdf(page.book_id, page.id)
         dpi = scan_dpi(page)
         gray, ocr = self.tidied(page, png)
+        was = page.ocr or {}
+        if not cast("dict[str, Any]", ocr.get("layout") or {}).get("groups"):
+            # its layout could not be read (the model's answer was not one): laid out from its own lines, as one block when not plain, so a
+            # text page is still set in type
+            try:
+                context = layout.numbered(ocr, self.run_model)
+                one = {"blocks": [{"lines": [n for n, _, _ in layout.numbered_lines(context)], "role": "body"}]}
+                groups = layout.plain_groups(context) or one
+                # its pictures, as the read found them or a person drew them: a layout model would have named them (review)
+                groups = dict(groups, figures=self.figures_in_thousandths(page, gray.shape))
+                ocr = dict(ocr, layout=layout.read_layout(png, ocr, layout.PLAIN, dpi, self.run_model, groups))
+                was = ocr
+            except layout.LayoutError as e:
+                raise StageError(str(e)) from e
         plain = cast("dict[str, Any]", ocr.get("layout") or {}).get("model") == layout.PLAIN
         faces = self.book_faces(page.book_id) if plain else None
         try:
-            used = self.set_in_type(page, ocr, png, out, dpi, page.ocr or {}, faces)
+            used = self.set_in_type(page, ocr, png, out, dpi, was, faces)
         except layout.LayoutError as e:
             files.remove(out)
             raise StageError(str(e)) from e
@@ -648,6 +668,8 @@ class Runner:
         fixed, also = 0, ()
         if not verdict.passed and not page.text_edited:
             verdict, fixed, also = self.set_from_rows(page, ocr, gray, png, out, dpi, again, verdict)
+            if not verdict.passed:
+                verdict, also = self.set_from_reader(page, png, out, dpi, again, verdict, also)
         with store.session() as s:
             p = s.get(Page, page.id)
             if p is not None and p.ocr is not None:
@@ -660,6 +682,49 @@ class Runner:
                 # a new dict: SQLAlchemy does not see a JSON column change in place. `type`: the font shortlist this page was set with
                 kept = {"faces": used, "plain": plain, "asked": faces is None}
                 p.ocr = dict(p.ocr, gate=record, type=kept)
+
+    def figures_in_thousandths(self, page: Page, shape: tuple[int, ...]) -> list[dict[str, Any]]:
+        """The page's pictures as a layout names them: boxes [x0, y0, x1, y1] in thousandths of the page."""
+        high, wide = shape[0], shape[1]
+        with store.session() as s:
+            figs = list(s.scalars(select(Figure).where(Figure.page_id == page.id)))
+        return [
+            {
+                "box": [1000 * f.x / wide, 1000 * f.y / high, 1000 * (f.x + f.w) / wide, 1000 * (f.y + f.h) / high],
+                "kind": "figure",
+            }
+            for f in figs
+        ]
+
+    def rebuild_picture(self, page: Page) -> None:
+        """A page with no text to set (`typeset`): its pictures cut from the scan onto clean paper, or the whole page when it is a cover or a
+        pattern (marbled paper: mostly ink), or a true blank of its size when it holds neither (layout.picture_page). No gate: no text to check."""
+        png = files.page_png(page.book_id, page.id)
+        if not os.path.isfile(png):
+            render(page)
+        with store.session() as s:
+            boxes = [(f.x, f.y, f.w, f.h) for f in s.scalars(select(Figure).where(Figure.page_id == page.id))]
+        whole = page.kind == "cover" or (page.kind != "blank" and not boxes and layout.inked_share(png) > layout.INKED)
+        if whole:
+            from PIL import Image
+
+            with Image.open(png) as im:
+                boxes = [(0, 0, im.width, im.height)]
+        elif page.kind == "blank":
+            boxes = []  # what the page finder saw on a blank page is show-through and specks
+        out = files.rebuilt_pdf(page.book_id, page.id)
+        try:
+            crops = os.path.dirname(files.path(page.book_id, "crops", "x"))
+            layout.picture_page(png, boxes, out, scan_dpi(page), self.run_model or layout.models_run, crops)
+        except layout.LayoutError as e:
+            files.remove(out)
+            raise StageError(str(e)) from e
+        with store.session() as s:
+            p = s.get(Page, page.id)
+            if (
+                p is not None and p.ocr is not None
+            ):  # a page never read stays unread: its first reading guesses its kind (review)
+                p.ocr = dict(p.ocr, gate={"passed": True, "reasons": [], "picture": bool(boxes), "whole": whole})
 
     def tidied(self, page: Page, png: str) -> tuple[gate.Gray, dict[str, Any]]:
         """(the page in grey, its OCR tidied by its rows of ink: rows.tidy), as it is set."""
@@ -724,7 +789,7 @@ class Runner:
         first: gate.Verdict,
     ) -> tuple[gate.Verdict, int, tuple[str, ...]]:
         """(verdict, lines put right, why it failed even so) of a page that failed, set again from its OCR put right by its rows (rows.repair), with the layout read for
-        those lines. Kept only when it passes: a page the OCR read well can come out worse, and a failed page is its scan either way."""
+        those lines. Kept only when it passes: a page the OCR read well can come out worse, and the first setting stands either way."""
         fixed, n = rows.repair(ocr, gray, page.text or "", dpi)
         model = settings.layout_model()
         if not n or model is None or self.run_model is None:
@@ -747,8 +812,46 @@ class Runner:
         finally:
             files.remove(trial)
 
+    def set_from_reader(
+        self,
+        page: Page,
+        png: str,
+        out: str,
+        dpi: int,
+        again: str | None,
+        first: gate.Verdict,
+        why: tuple[str, ...],
+    ) -> tuple[gate.Verdict, tuple[str, ...]]:
+        """(verdict, why it failed even so) of a page that failed both ways, set again from another reader's lines (READER: docTR's boxes with
+        Claude's text, which reads through a stain that Tesseract reads as junk), with a layout read for them. Kept only when it passes."""
+        model = settings.layout_model()
+        if model is None or self.run_model is None:
+            return first, why
+        trial = out + ".reader.pdf"
+        try:
+            read = dict(self.run_model("ocr", {"path": png}, READER))  # docTR takes no dpi
+            laid = layout.read_layout(png, read, model, dpi, self.run_model)
+            read = dict(read, layout=laid)
+            self.set_in_type(page, read, png, trial, dpi)
+            verdict = self.judge(page, read, png, trial, dpi, again)
+        except layout.LayoutError as e:
+            log.warning("page %s: not set again from %s: %s", page.id, READER, e)
+            return first, (*why, str(e))
+        else:
+            if not verdict.passed:
+                return first, (*why, *verdict.reasons)
+            os.replace(trial, out)
+            return verdict, ()
+        finally:
+            files.remove(trial)
+
     def stage_export(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
         export.write_all(book_id, lambda d, t: self._progress(book_id, done=d, total=t))
+
+
+def typeset(page: Page) -> bool:
+    """Whether the page is set in type: a text page with lines read. Any other is its pictures, its pattern or a blank (rebuild_picture)."""
+    return page.kind == "text" and bool((page.ocr or {}).get("lines")) and bool((page.text or "").strip())
 
 
 def resume_from(stage: str) -> tuple[str, ...]:
