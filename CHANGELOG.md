@@ -4,6 +4,11 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-27
 
+**A dense page of type is not a pattern (branch `dense-text`)**
+The third book's first finished PDF: 120 of its 154 text pages came out as their scans. Each was photographed on greyish paper, and `marks.lift` found 16-29 % of the page to be marks, over `PATTERN` (0.2), so `rebuild_one` took them for patterned paper and kept them whole.
+- `marks.py`: `PATTERN` is 0.6. Marbled paper measures 0.89-0.94 (the 1874 book's endpaper, the 1828 book's edge shot), a dense page of type 0.16-0.29, a leaf with handwriting under 0.05.
+- `tests/unit/test_marks.py`: a dense page of type on grey paper is no pattern.
+
 **Haiku lays pages out first, Opus only those that fail; one font shortlist a book; every Claude call of a rebuild in bulk (branch `cheap-first`)**
 Jonathan: lay out with Haiku (or Tesseract) and fall back to Opus only when a page fails; batch the font checks, asking for a sample of the book to get a fuller list for the rest; and no Claude call sent on its own (strata-models batches bulk calls, but some went one at a time).
 - `settings.py`: `layout` defaults to `claude-haiku-5-5-api`; **new** `layout_fallback` (default `claude-opus-5-5-api`, or `off`).
