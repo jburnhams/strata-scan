@@ -26,8 +26,13 @@ def test_planned_calls_go_in_one_bulk_call_per_role_and_model_and_answer_once(fa
     run = bulk.wrap(at_once, lambda role, e: layout.LayoutError(f"{role}: {e}"))
     assert run("vision-language", {"prompt": "a"}, "haiku") == {"text": "A"}
     assert run("vision-language", {"prompt": "a"}, "haiku") == {"text": "A"}  # the second planned one
-    assert run("vision-language", {"prompt": "a"}, "haiku") == {"text": "now"}  # none left: made now
+    assert run("vision-language", {"prompt": "a"}, "haiku") == {"text": "A"}  # none left: the answer already had
+    assert made == []
+    assert run("vision-language", {"prompt": "c"}, "haiku") == {"text": "now"}  # never planned: made now
     assert made == ["vision-language"]
+    fake_models.jobs.clear()
+    assert bulk.send([("vision-language", {"prompt": "d"}, "haiku")], batch=True) == 1
+    assert [j["batch"] for j in fake_models.jobs] == [True]  # the batch API however few
     fake_models.fail("bad image", role="vision-language")
     bulk.send([("vision-language", {"prompt": "b"}, "haiku")])
     with pytest.raises(layout.LayoutError, match="vision-language: bad image"):

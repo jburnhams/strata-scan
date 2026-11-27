@@ -296,15 +296,18 @@ def test_a_text_page_is_laid_out_and_set_again(make_book, fake_models, monkeypat
     PDFs, and re-reading a page removes what was set from the old reading."""
     from books import tesseract_ocr
 
+    monkeypatch.setenv(
+        "STRATASCAN_LAYOUT_FALLBACK", "off"
+    )  # each page set once (the fallback: test_a_page_that_fails_is_laid_out_again)
     fake_models.results = models_answers(fake_models)
     r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
     b = make_book()
     r.run(pipeline.Task(b, ("import", "detect", "read")))
     texts = [p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"]]
     assert texts
-    assert all(p.ocr["layout"]["model"] == "claude-opus-5-5-api" and p.ocr["layout"]["blocks"] for p in texts)
+    assert all(p.ocr["layout"]["model"] == "claude-haiku-5-5-api" and p.ocr["layout"]["blocks"] for p in texts)
     asked = [j for j in fake_models.jobs if j["role"] == "vision-language"]
-    assert {(j["model"], j["params"]["preset"]) for j in asked} == {("claude-opus-5-5-api", "page-layout-fix-v2")}
+    assert {(j["model"], j["params"]["preset"]) for j in asked} == {("claude-haiku-5-5-api", "page-layout-fix-v2")}
     assert len(asked) == len(
         texts
     )  # each page's layout asked once, all of them in one bulk call before any page was finished
@@ -322,8 +325,12 @@ def test_a_text_page_is_laid_out_and_set_again(make_book, fake_models, monkeypat
     assert {j["params"].get("preset") or j["params"].get("system_preset") for j in asked} == {
         "page-text-fix-v1",
         "ocr-read-v2",
+        "font-propose-v1",
     }
-    assert len(asked) == 2 * len(texts)  # queued ahead: none asked again when its page was set
+    proposed = [j for j in asked if j["params"].get("system_preset") == "font-propose-v1"]
+    assert len(proposed) == min(pipeline.SAMPLE, len(texts))  # the book's shortlist, from a sample
+    assert all(j["batch"] for j in asked)  # every Claude call in bulk, through the batch API however few
+    assert len(asked) == 2 * len(texts) + len(proposed)  # queued ahead: none asked again when its page was set
     assert max(j["id"] for j in asked) < min(j["id"] for j in draws)  # all before the first page was drawn
     assert all(os.path.isfile(files.rebuilt_pdf(b, p.id)) for p in texts)
     assert os.path.isfile(files.export(b, "book-rebuilt.pdf"))
@@ -359,10 +366,18 @@ def test_the_finished_pdf_sets_every_page_and_one_that_fails_is_flagged(make_boo
         return got
 
     fake_models.results = {**answers, "page-build": page_build}
+    fake_models.jobs.clear()
     r.run(pipeline.Task(b, ("rebuild", "export")))
     assert order[0] == worst.id
+    relaid = [j for j in fake_models.jobs if j["params"].get("preset") == "page-layout-fix-v2"]
+    assert [(j["model"], j["batch"]) for j in relaid] == [
+        ("claude-opus-5-5-api", True)
+    ]  # the page that failed, laid out again
+    assert order.count(worst.id) > 1  # and set again from it, before its other routes
     by_id = {p.id: p for p in pages_of(b)}
     assert by_id[worst.id].ocr["gate"]["passed"] is False
+    laid = by_id[worst.id].ocr["layout"]
+    assert (laid["model"], laid["first_model"]) == ("claude-opus-5-5-api", "claude-haiku-5-5-api")
     assert by_id[worst.id].ocr["gate"]["reasons"][0].startswith("100.0% of the words are missing")
     assert export.stands(b, by_id[worst.id]) is True  # set all the same, its best try: only blanks and covers are scans
     good = [by_id[p.id] for p in texts if p.id != worst.id]
@@ -531,15 +546,14 @@ def test_a_reading_held_between_the_passes_keeps_no_image():
     }
 
 
-def test_a_books_plain_pages_share_the_font_shortlist_of_its_first_ones(make_book, fake_models):
-    """Pages laid out from their own lines are plain: the first SAMPLE ask for a shortlist, the rest are given the faces those named most."""
-    from books import tesseract_ocr
+def test_a_books_pages_share_one_font_shortlist_asked_for_a_sample_of_them_in_bulk(make_book, fake_models):
+    """Plain pages ask no layout model. The rebuild asks the proposer about a sample of the book's pages in one bulk call, and every page is
+    fitted with those answers as its candidates: none asks a proposer of its own."""
+    from books import page, tesseract_ocr
 
     answers = models_answers(fake_models)
     fake_models.results = answers
     r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
-    from books import page
-
     lines = [f"line {i} of the plain running text of a page" for i in range(14)]
     b = make_book(scans=[page(lines) for _ in range(5)])
     r.run(pipeline.Task(b, ("import", "detect", "read")))
@@ -551,19 +565,37 @@ def test_a_books_plain_pages_share_the_font_shortlist_of_its_first_ones(make_boo
         for j in fake_models.jobs
         if j["role"] == "vision-language" and j["params"].get("preset") == "page-layout-fix-v2"
     ]
-    named = iter([["caslon", "bodoni"], ["caslon", "baskerville"], ["caslon", "bodoni"]])
+    told = iter(["Caslon, then Bodoni", "Caslon or Baskerville", "caslon"] * 3)
+    language = answers["vision-language"]
+
+    def vision(params):
+        if params.get("system_preset") == layout.PROPOSE_PRESET:
+            return {"text": next(told), "model": "m"}
+        return language(params) if callable(language) else language
+
     asked = []
 
     def fit(params):
-        asked.append(params.get("candidates"))
-        return {"face": "tinos", "blocks": [], "fonts": {}, "proposed": params.get("candidates") or next(named)}
+        asked.append((params.get("candidates"), params.get("propose")))
+        return {"face": "tinos", "blocks": [], "fonts": {}, "proposed": ["caslon"]}
 
-    fake_models.results = {**answers, "font-match": fit}
+    fake_models.jobs.clear()
+    fake_models.results = {**answers, "vision-language": vision, "font-match": fit}
     r.run(pipeline.Task(b, ("rebuild",)))
-    assert asked[: pipeline.SAMPLE] == [None] * pipeline.SAMPLE
-    assert all(a == ["caslon", "bodoni", "baskerville"] for a in asked[pipeline.SAMPLE :])
-    kinds = [p.ocr["type"]["asked"] for p in pages_of(b) if p.kind == "text"]
-    assert kinds.count(True) == pipeline.SAMPLE
+    proposals = [j for j in fake_models.jobs if j["params"].get("system_preset") == layout.PROPOSE_PRESET]
+    assert len(proposals) == min(pipeline.SAMPLE, len(texts))
+    assert {j["batch"] for j in proposals} == {True}
+    shortlist = r.book_faces(b)
+    assert shortlist is not None
+    assert shortlist[0] == "Caslon, then Bodoni"
+    assert asked
+    assert all(a == (shortlist, False) for a in asked)
+    assert not any(p.ocr["type"]["asked"] for p in pages_of(b) if p.kind == "text")
+    fake_models.jobs.clear()
+    r.run(pipeline.Task(b, ("rebuild",), tuple(p.id for p in texts)))
+    assert not [
+        j for j in fake_models.jobs if j["params"].get("system_preset") == layout.PROPOSE_PRESET
+    ]  # asked once a book
 
 
 def test_a_page_that_fails_both_ways_is_read_again_by_another_reader_and_kept_only_when_it_passes(
@@ -663,3 +695,70 @@ def test_a_leaf_keeps_its_writing_on_white_and_a_cover_is_cut_to_the_book(make_b
     with store.session() as s:
         s.get(Page, cover.id).kind = "picture"  # a person says it is a picture: made again
     assert not pipeline.made(next(p for p in pages_of(b) if p.id == cover.id))
+
+
+def test_a_page_whose_layout_call_failed_is_asked_again_and_never_set_without_one(make_book, fake_models, monkeypatch):
+    """A layout call that got no answer (strata-models restarted during the read) is asked again, in bulk, before the page is set; while it
+    still gets none the page is not set, and the book says why."""
+    from books import tesseract_ocr
+
+    monkeypatch.setenv("STRATASCAN_LAYOUT_FALLBACK", "off")
+    fake_models.results = models_answers(fake_models)
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
+    b = make_book()
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    page = next(p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"].get("groups"))
+    lost = {"model": "claude-haiku-5-5-api", "error": "strata-models is not running (connection refused)"}
+
+    def lose_layout():
+        with store.session() as s:
+            row = s.get(Page, page.id)
+            row.ocr = dict(row.ocr, layout=lost)
+        files.remove(files.rebuilt_pdf(b, page.id))
+
+    lose_layout()
+    fake_models.fail("refused", role="vision-language")  # the one layout call asked again fails too
+    fake_models.jobs.clear()
+    r.run(pipeline.Task(b, ("rebuild",), (page.id,)))
+    assert not os.path.isfile(files.rebuilt_pdf(b, page.id))  # not set as one block of text
+    assert "layout could not be read" in book(b).error
+    fake_models.jobs.clear()
+    r.run(pipeline.Task(b, ("rebuild",), (page.id,)))
+    asked = [j for j in fake_models.jobs if j["params"].get("preset") == "page-layout-fix-v2"]
+    assert [(j["model"], j["batch"]) for j in asked] == [("claude-haiku-5-5-api", True)]
+    again = next(p for p in pages_of(b) if p.id == page.id)
+    assert again.ocr["layout"]["groups"]
+    assert os.path.isfile(files.rebuilt_pdf(b, page.id))
+
+
+def test_a_second_try_that_cannot_be_made_keeps_the_first_setting(make_book, fake_models):
+    """A page that failed from its first layout is laid out again and set again; when that setting cannot be made at all (its fit fails),
+    the first PDF is put back, so the page is never left a scan (review)."""
+    from books import tesseract_ocr
+
+    answers = models_answers(fake_models)
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
+    b = make_book()
+    fake_models.results = answers
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    worst = min((p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"]), key=lambda p: p.ocr_conf)
+    draw, tries = answers["page-build"], []
+
+    def page_build(params):
+        pid = int(os.path.basename(params.get("out", "0")).split(".")[0]) if params.get("font_fit") else 0
+        if pid == worst.id:
+            tries.append(pid)
+            if len(tries) > 1:
+                raise RuntimeError("the fit failed")
+            got = draw(params)  # a first setting that fails the gate (the stand-in draws no words)
+            return got
+        got = draw(params)
+        if pid:
+            shutil.copyfile(files.ocr_pdf(b, pid), params["out"])
+        return got
+
+    fake_models.results = {**answers, "page-build": page_build}
+    r.run(pipeline.Task(b, ("rebuild",)))
+    assert len(tries) == 2  # set from its first layout, then again from the fallback's
+    assert os.path.isfile(files.rebuilt_pdf(b, worst.id))  # the first setting, put back
+    assert not os.path.exists(files.rebuilt_pdf(b, worst.id) + ".first.pdf")

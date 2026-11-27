@@ -43,13 +43,18 @@ class LayoutError(RuntimeError):
     """A failure to show the person, in words."""
 
 
+class CallError(LayoutError):
+    """A model was not reached, or its job failed: no answer at all, unlike an answer that was no layout. A page whose layout call failed is
+    asked again before it is set, never set without one (Jonathan, 2026-11-27)."""
+
+
 def models_run(role: str, params: dict[str, Any], model: str | None) -> Mapping[str, Any]:
     try:
         return sm.run(role, params, app=APP, model=model)
     except sm.Unavailable as e:
-        raise LayoutError(f"strata-models is not running ({e})") from e
+        raise CallError(f"strata-models is not running ({e})") from e
     except sm.JobFailed as e:
-        raise LayoutError(f"strata-models could not do it ({role}): {e}") from e
+        raise CallError(f"strata-models could not do it ({role}): {e}") from e
 
 
 def plain(ocr: Mapping[str, Any]) -> dict[str, Any]:
@@ -85,6 +90,18 @@ def layout_params(png: str, context: str) -> dict[str, Any]:
 def text_params(png: str, context: str) -> dict[str, Any]:
     """The call putting each line's text right, for a page whose numbered lines are `context` (`rebuild_page`; planned ahead)."""
     return {"preset": TEXT_PRESET, "context": context, "image": png, "max_tokens": 8192}
+
+
+PROPOSE_MODEL = (
+    "claude-sonnet-5-5-api"  # the font-match proposer strata-models' font-match eval chose (models.toml `propose`)
+)
+PROPOSE_PRESET = "font-propose-v1"
+PROPOSE_PROMPT = "Identify the typeface of the printed text in this picture."  # strata-models fontfit.PROPOSE_PROMPT
+
+
+def propose_params(png: str) -> dict[str, Any]:
+    """The font-match proposer's call for a whole page: its answer, any text naming faces, is a shortlist font-match takes as `candidates`."""
+    return {"system_preset": PROPOSE_PRESET, "prompt": PROPOSE_PROMPT, "image": png, "max_tokens": 1500}
 
 
 def read_params(png: str) -> dict[str, Any]:

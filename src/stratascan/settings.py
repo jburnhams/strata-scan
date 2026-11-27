@@ -10,10 +10,12 @@
              correction got 0.27 % of characters wrong (plain Tesseract then Haiku 0.88 %, then the local qwen3.5-9b-vl 3.7 %, Tesseract alone
              23 %), for about $0.0007 a page; the lines and their boxes stay Tesseract's. Ten pages, so the order of the first two is
              not certain.
-  layout     the vision-language model that reads each text page's layout (default `claude-opus-5-5-api`), or `off`: page-layout's winner,
-             blocks found 96.5 % against Tesseract's 64 %, about 3 cents a page. The Markdown and the rebuilt pages follow it.
+  layout     the vision-language model that reads each text page's layout first (default `claude-haiku-5-5-api`), or `off`. The Markdown
+             and the rebuilt pages follow it. A plain page of running text asks none (layout.plain_groups).
+  layout_fallback  the model that lays out again a page that failed the gate when set from the first one (default `claude-opus-5-5-api`,
+             page-layout's winner: blocks found 96.5 % against Tesseract's 64 %, about 3 cents a page), or `off`.
 
-The environment variables STRATASCAN_DATA, STRATASCAN_MAX_DPI, STRATASCAN_WORKERS, STRATASCAN_CORRECT and STRATASCAN_LAYOUT override the file. The file handling, precedence and
+The environment variables STRATASCAN_DATA, STRATASCAN_MAX_DPI, STRATASCAN_WORKERS, STRATASCAN_CORRECT, STRATASCAN_LAYOUT and STRATASCAN_LAYOUT_FALLBACK override the file. The file handling, precedence and
 validation are [strata_python.settings](https://github.com/jburnhams/strata-python); this module only declares the app's settings."""
 
 import os
@@ -41,7 +43,8 @@ SETTINGS = Settings(
         Setting("max_dpi", default="600", normalise=whole_between(72, 1200)),
         Setting("workers", default="4", normalise=whole_between(1, 32)),
         Setting("correct", default="claude-haiku-5-5-api", normalise=model_or_off),
-        Setting("layout", default="claude-opus-5-5-api", normalise=model_or_off),
+        Setting("layout", default="claude-haiku-5-5-api", normalise=model_or_off),
+        Setting("layout_fallback", default="claude-opus-5-5-api", normalise=model_or_off),
     ],
 )
 KNOWN = SETTINGS.keys
@@ -82,6 +85,12 @@ def correct_model() -> str | None:
 def layout_model() -> str | None:
     """The model that reads a page's layout, or None when that is off."""
     v = str(SETTINGS.get("layout"))
+    return None if v == "off" else v
+
+
+def layout_fallback() -> str | None:
+    """The model a page's layout is read again with when the page set from the first layout fails the gate, or None for no second try."""
+    v = str(SETTINGS.get("layout_fallback"))
     return None if v == "off" else v
 
 
