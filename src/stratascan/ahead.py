@@ -31,18 +31,20 @@ class Ahead:
     def __init__(self, app: str = APP) -> None:
         self.app = app
         self._ids: dict[str, list[int]] = {}
+        self._done: dict[str, Mapping[str, Any]] = {}  # answers already waited for: a page set twice asks the same once
         self._lock = threading.Lock()
 
-    def send(self, calls: Iterable[Call]) -> int:
+    def send(self, calls: Iterable[Call], batch: bool | None = None) -> int:
         """Queue `calls` in bulk, one call of strata-models per (role, model); returns how many were queued. strata-models down or refusing
-        leaves them unplanned: each is then made when the page asks for it, as before."""
+        leaves them unplanned: each is then made when the page asks for it, as before. `batch`: strata-models' batch API however few (True),
+        never (False), or from 20 calls (None, its default)."""
         groups: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
         for role, params, model in calls:
             groups.setdefault((role, model), []).append(params)
         n = 0
         for (role, model), items in groups.items():
             try:
-                ids = sm.submit_many(role, items, self.app, model=model)
+                ids = sm.submit_many(role, items, self.app, model=model, batch=batch)
             except (sm.Unavailable, sm.JobFailed) as e:
                 log.warning("%d %s calls not queued ahead: %s", len(items), role, e)
                 continue
@@ -63,11 +65,21 @@ class Ahead:
 
         def ahead(role: str, params: dict[str, Any], model: str | None) -> Mapping[str, Any]:
             job = self.take(role, params, model)
+            k = key(role, params, model)
             if job is None:
+                with self._lock:
+                    if k in self._done:
+                        return self._done[k]
                 return run(role, params, model)
             try:
-                return sm.wait(job)
+                got = sm.wait(job)
             except (sm.Unavailable, sm.JobFailed) as e:
                 raise error(role, e) from e
+            if (
+                role == "vision-language"
+            ):  # a cloud model's answer, the same asked again; a page-build's drawing is made anew
+                with self._lock:
+                    self._done[k] = got
+            return got
 
         return ahead

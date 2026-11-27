@@ -30,7 +30,7 @@ import json
 import logging
 import os
 import threading
-from collections import Counter, deque
+from collections import deque
 from collections.abc import Callable, Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -113,8 +113,7 @@ def plausible(before: str, after: str) -> bool:
 
 
 READER = "doctr-haiku-fix"  # the last route's reader: docTR's word boxes, Claude Haiku's text (strata-models, eval ocr-lines)
-SAMPLE = 3  # plain pages of a book whose font shortlist is asked for before the rest share theirs
-SHORTLIST = 4  # faces in a shared shortlist: as many as the proposer names for a page
+SAMPLE = 6  # text pages of a book, spread through it, whose font shortlists together are the book's (book_faces)
 
 
 class StageError(RuntimeError):
@@ -293,14 +292,13 @@ class Runner:
         return errors
 
     @contextmanager
-    def queued_ahead(self, calls: list[ahead.Call]) -> Generator[None]:
+    def queued_ahead(self, calls: list[ahead.Call], batch: bool | None = None) -> Generator[ahead.Ahead]:
         """While a stage runs: its planned cloud calls queued in bulk (ahead.py; 20 or more on a Claude model go through its batch API at
-        half the price) and answered from there when a page makes them. One stage runs at a time, so swapping the run functions is safe."""
-        if not calls:
-            yield
-            return
+        half the price, or any number with `batch`) and answered from there when a page makes them; the stage can send more through what
+        this yields. One stage runs at a time, so swapping the run functions is safe."""
         bulk = ahead.Ahead()
-        bulk.send(calls)
+        if calls:
+            bulk.send(calls, batch)
         run, correct = self.run_model, self.correct
         if run is not None:
             self.run_model = bulk.wrap(
@@ -319,7 +317,7 @@ class Runner:
 
             self.correct = queued
         try:
-            yield
+            yield bulk
         finally:
             self.run_model, self.correct = run, correct
 
@@ -646,14 +644,22 @@ class Runner:
             raise StageError("the book has no pages to set again: find them first")
         # one at a time: a type fit is minutes of CPU and the heaviest job strata-models runs for this app (fourteen queued pages once ran the
         # service out of memory, 2026-11-24)
-        with self.queued_ahead(
-            self.rebuild_calls(todo)
-        ):  # the cloud calls of every page in bulk; the type fits still one at a time
-            errors = self._each(book_id, todo, self.rebuild_one, at_once=1)
+        # Every Claude call in bulk, in rounds (Jonathan, 2026-11-27: none sent one at a time): the book's font shortlist from a sample of its
+        # pages; then each page's line fix and second reading while every page is set from its first (cheap) layout; then, for the pages that
+        # failed, their layouts read again by the fallback model, and those pages set again. The type fits stay one at a time.
+        self.sample_faces(book_id)
+        deferred: list[Page] = []
+        with self.queued_ahead(self.rebuild_calls(todo), batch=True) as bulk:
+            errors = self._each(book_id, todo, partial(self.rebuild_one, deferred=deferred), at_once=1)
+            if deferred:
+                again = self.relayout(deferred, bulk)
+                errors += self._each(book_id, again, self.rebuild_one, at_once=1)
         if errors:
             self._progress(book_id, error=f"{len(errors)} of {len(todo)} pages could not be set again: {errors[0]}")
 
-    def rebuild_one(self, page: Page) -> None:
+    def rebuild_one(self, page: Page, deferred: list[Page] | None = None) -> None:
+        """Set one page (or make it as a picture page). `deferred`: where a page that fails from a first layout the fallback model could read
+        better is put, to be laid out again in bulk with the others (`relayout`), instead of being tried by its other routes now."""
         if self.run_model is None:
             raise StageError("strata-models is not set up")
         png = files.page_png(page.book_id, page.id)
@@ -668,7 +674,11 @@ class Runner:
         dpi = scan_dpi(page)
         gray, ocr = self.tidied(page, png)
         was = page.ocr or {}
-        if not cast("dict[str, Any]", ocr.get("layout") or {}).get("groups"):
+        first = cast("dict[str, Any]", ocr.get("layout") or {})
+        fallback = settings.layout_fallback()
+        # a layout the fallback could better: one the cheaper model read, or none read at all (its answer was not one, or never came)
+        betterable = fallback is not None and first.get("model") not in (fallback, layout.PLAIN)
+        if not first.get("groups"):
             # its layout could not be read (the model's answer was not one): laid out from its own lines, as one block when not plain, so a
             # text page is still set in type
             try:
@@ -682,7 +692,7 @@ class Runner:
             except layout.LayoutError as e:
                 raise StageError(str(e)) from e
         plain = cast("dict[str, Any]", ocr.get("layout") or {}).get("model") == layout.PLAIN
-        faces = self.book_faces(page.book_id) if plain else None
+        faces = self.book_faces(page.book_id)
         try:
             used = self.set_in_type(page, ocr, png, out, dpi, was, faces)
         except layout.LayoutError as e:
@@ -691,7 +701,9 @@ class Runner:
         again = self.second_reading(page, png)
         verdict = self.judge(page, ocr, png, out, dpi, again)
         fixed, also = 0, ()
-        if not verdict.passed and not page.text_edited:
+        if not verdict.passed and betterable and deferred is not None and not page.text_edited:
+            deferred.append(page)  # laid out again by the fallback model, in bulk with the others, then set again
+        elif not verdict.passed and not page.text_edited:
             verdict, fixed, also = self.set_from_rows(page, ocr, gray, png, out, dpi, again, verdict)
             if not verdict.passed:
                 verdict, also = self.set_from_reader(page, png, out, dpi, again, verdict, also)
@@ -852,19 +864,87 @@ class Runner:
         return layout.rebuild_page(png, ocr, out, dpi, typed, self.run_model, page.text, was, faces)
 
     def book_faces(self, book_id: int) -> list[str] | None:
-        """The font shortlist for a plain page of the book: the faces most often proposed for its plain pages, once SAMPLE of them have had
-        one proposed. None (ask for one) before that. A book's body type is one face, so asking for each page paid for the same answer."""
-        with store.session() as s:
-            q = select(Page.ocr).where(Page.book_id == book_id, Page.kind == "text", Page.ocr.is_not(None))
-            told: list[list[str]] = []
-            for ocr in s.scalars(q):
-                t = cast("dict[str, Any]", (ocr or {}).get("type") or {})
-                if t.get("plain") and t.get("asked") and t.get("faces"):
-                    told.append([str(f) for f in cast("list[Any]", t["faces"])])
-        if len(told) < SAMPLE:
+        """The book's font shortlist (`sample_faces`): the proposer's answers for a sample of its pages, which font-match reads every face
+        named in, in order; None when there is none, and each page then asks for its own."""
+        try:
+            with open(files.path(book_id, "faces.json"), encoding="utf-8") as f:
+                got = cast("dict[str, Any]", json.load(f))
+        except (OSError, ValueError):
             return None
-        votes = Counter(f for faces in told for f in faces)
-        return [f for f, _ in votes.most_common(SHORTLIST)]
+        answers = [str(a) for a in cast("list[Any]", got.get("answers") or []) if str(a).strip()]
+        return answers or None
+
+    def sample_faces(self, book_id: int) -> None:
+        """The book's font shortlist, once: the proposer asked, in one bulk call, about SAMPLE of its text pages spread through it (body type,
+        and the display type of a title or an advert among them), its answers kept in the book's faces.json (`book_faces`). A book's faces
+        are few, so asking for each page paid for the same answer (Jonathan, 2026-11-26), and a page asking its own was a call on its own."""
+        if self.run_model is not layout.models_run or self.book_faces(book_id) is not None:
+            return
+        with store.session() as s:
+            q = select(Page).where(Page.book_id == book_id, Page.kind == "text").order_by(Page.position)
+            texts = [p for p in s.scalars(q) if typeset(p) and os.path.isfile(files.page_png(book_id, p.id))]
+        if not texts:
+            return
+        step = len(texts) / min(SAMPLE, len(texts))
+        sample = [texts[int(i * step)] for i in range(min(SAMPLE, len(texts)))]
+        pngs = [files.page_png(book_id, p.id) for p in sample]
+        try:
+            got = sm.run_many(
+                "vision-language",
+                [layout.propose_params(png) for png in pngs],
+                ahead.APP,
+                model=layout.PROPOSE_MODEL,
+                batch=True,
+            )
+        except sm.Unavailable as e:
+            log.warning("book %s: no font shortlist: %s", book_id, e)
+            return
+        answers = [str(r.get("text") or "") for r in got if not isinstance(r, Exception)]
+        if not any(a.strip() for a in answers):
+            return
+        with open(files.path(book_id, "faces.json"), "w", encoding="utf-8") as f:
+            json.dump({"model": layout.PROPOSE_MODEL, "pages": [p.id for p in sample], "answers": answers}, f)
+
+    def relayout(self, pages: list[Page], bulk: ahead.Ahead) -> list[Page]:
+        """The pages' layouts read again by the fallback model, in one bulk call, and kept (the first one's model as `first_model`); the pages
+        as they now are, to be set again. A page whose new layout cannot be read keeps its first and is set again by its other routes."""
+        fallback = settings.layout_fallback()
+        run = self.run_model
+        if fallback is None or run is None:
+            return pages
+        planned: list[tuple[Page, str]] = []
+        for p in pages:
+            png = files.page_png(p.book_id, p.id)
+            try:
+                planned.append((p, layout.numbered(p.ocr or {}, run)))
+            except layout.LayoutError as e:
+                log.warning("page %s: not laid out again: %s", p.id, e)
+        bulk.send(
+            [
+                ("vision-language", layout.layout_params(files.page_png(p.book_id, p.id), c), fallback)
+                for p, c in planned
+            ],
+            batch=True,
+        )
+        again: list[Page] = []
+        for p, _ in planned:
+            png = files.page_png(p.book_id, p.id)
+            try:
+                laid = layout.read_layout(png, p.ocr or {}, fallback, scan_dpi(p), self.run_model or run)
+            except layout.LayoutError as e:
+                log.warning("page %s: the fallback layout failed: %s", p.id, e)
+                laid = None
+            with store.session() as s:
+                row = s.get(Page, p.id)
+                if row is None or row.ocr is None:
+                    continue
+                if laid is not None:
+                    first = str(cast("dict[str, Any]", row.ocr.get("layout") or {}).get("model") or "")
+                    row.ocr = dict(row.ocr, layout=dict(laid, first_model=first))
+                s.flush()
+                s.expunge(row)
+                again.append(row)
+        return again
 
     def second_reading(self, page: Page, png: str) -> str | None:
         """The page read again by another route, to check its words by; None for a person's text (the one to hold the page to) or none to be had."""

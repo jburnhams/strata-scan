@@ -4,6 +4,14 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-27
 
+**Haiku lays pages out first, Opus only those that fail; one font shortlist a book; every Claude call of a rebuild in bulk (branch `cheap-first`)**
+Jonathan: lay out with Haiku (or Tesseract) and fall back to Opus only when a page fails; batch the font checks, asking for a sample of the book to get a fuller list for the rest; and no Claude call sent on its own (strata-models batches bulk calls, but some went one at a time).
+- `settings.py`: `layout` defaults to `claude-haiku-5-5-api`; **new** `layout_fallback` (default `claude-opus-5-5-api`, or `off`).
+- `pipeline.py` `stage_rebuild` works in rounds, each round's Claude calls in one bulk call through strata-models' batch API however few (`queued_ahead(batch=True)`): the book's font shortlist (`sample_faces`: the font-match proposer, Sonnet, asked about `SAMPLE` (6) text pages spread through the book, plain or not; its answers kept in the book's `faces.json` and given to every page's font-match as `candidates`, so no page asks a proposer of its own); every page set from its first layout, with its line fix and second reading; then the pages that failed from a layout the fallback could better (Haiku's, or none) laid out again by the fallback in one bulk call (`relayout`; the layout keeps `first_model`) and set again, only then trying their other routes. `book_faces` reads `faces.json`; `SHORTLIST` goes.
+- `ahead.py`: `send(batch=)`; a cloud model's answer is kept once waited for, so a page set twice asks it once.
+- `layout.py`: `propose_params`, `PROPOSE_MODEL`, `PROPOSE_PRESET`, `PROPOSE_PROMPT` (strata-models' own).
+- `tests/unit/test_ahead.py`, `test_pipeline.py` (the shortlist from a sample in bulk; a failed page laid out again by Opus in a batch).
+
 **A full-page plate in a book scanned with no bed is the whole scan (branch `no-bed`)**
 Jonathan added a third book (Punch & Judy: a history, 168 scans, each already the page). Seven of its scans were cut to a strip or a patch: full-page plates, whose dark ink runs to the edges, so the light region the page finder takes for the paper was a strip of margin (five were called blank or had no words), and the inside of the front flap.
 - `geometry.py`: `unbedded`: in a book where most scans are the page already (`BEDLESS` of them covering `WHOLE` of their scan), a single page found covering less than `PATCH` of its scan is the whole scan; a book on a bed, and spreads, keep what was found. `whole_page`: the scan as the page, levelled by its type (what `find_page` already did with no bed).

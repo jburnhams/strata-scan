@@ -87,6 +87,18 @@ def text_params(png: str, context: str) -> dict[str, Any]:
     return {"preset": TEXT_PRESET, "context": context, "image": png, "max_tokens": 8192}
 
 
+PROPOSE_MODEL = (
+    "claude-sonnet-5-5-api"  # the font-match proposer strata-models' font-match eval chose (models.toml `propose`)
+)
+PROPOSE_PRESET = "font-propose-v1"
+PROPOSE_PROMPT = "Identify the typeface of the printed text in this picture."  # strata-models fontfit.PROPOSE_PROMPT
+
+
+def propose_params(png: str) -> dict[str, Any]:
+    """The font-match proposer's call for a whole page: its answer, any text naming faces, is a shortlist font-match takes as `candidates`."""
+    return {"system_preset": PROPOSE_PRESET, "prompt": PROPOSE_PROMPT, "image": png, "max_tokens": 1500}
+
+
 def read_params(png: str) -> dict[str, Any]:
     """The call reading a page from its picture alone (`read_again`; planned ahead)."""
     return {"image": png, "prompt": "Transcribe this page.", "system_preset": READ_PRESET, "max_tokens": 4096}
