@@ -34,7 +34,8 @@ WRITING = 0.012  # share of the page's width a cluster of marks spans to be kept
 CLUSTER = (
     0.015  # share of the page's width between marks that are one cluster (the letters of a word, the words of a line)
 )
-PATTERN = 0.2  # share of a page that is marks above which it is a pattern (marbled paper), kept whole
+PATTERN = 0.6  # share of a page that is marks above which it is a pattern kept whole: marbled paper is 0.89-0.94, a dense page of type
+# photographed on grey paper 0.16-0.29 (at 0.2 the third book's text pages were taken for patterns and kept as scans, 2026-11-27)
 PLAIN = 25  # spread (standard deviation, 0-255) of a scan's edge within which it is one backdrop colour
 PHOTO = 110  # median grey (0-255) of a page under which it is the book photographed (cloth, a spine), not paper
 BACKDROP = 40  # colour distance from the backdrop at which the book begins, in a photograph of it

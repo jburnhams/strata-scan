@@ -84,3 +84,14 @@ def test_the_book_is_found_on_its_backdrop_and_a_scan_with_none_is_left_alone(tm
     cv2.imwrite(str(tmp_path / "spine.png"), scan[100:900, 250:550])
     assert marks.dark(str(tmp_path / "spine.png"))
     assert not marks.dark(page(tmp_path))
+
+
+def test_a_dense_page_of_type_on_grey_paper_is_no_pattern(tmp_path):
+    """A photographed page of small type on greyish paper is many marks, but far fewer than marbled paper: set in type, not kept whole."""
+    img = np.full((1800, 1200, 3), (150, 165, 175), np.uint8)
+    for y in range(120, 1700, 34):  # forty-odd lines of close-set type
+        cv2.putText(
+            img, "the puppets of the fair and the booths " * 2, (90, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (40, 40, 45), 2
+        )
+    cv2.imwrite(str(tmp_path / "t.png"), img)
+    assert marks.lift(str(tmp_path / "t.png"), None).share < marks.PATTERN
