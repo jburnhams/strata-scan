@@ -655,7 +655,7 @@ class Runner:
             errors = self._each(book_id, todo, partial(self.rebuild_one, deferred=deferred), at_once=1)
             if deferred:
                 again = self.relayout(deferred, bulk)
-                errors += self._each(book_id, again, self.rebuild_one, at_once=1)
+                errors += self._each(book_id, again, self.rebuild_again, at_once=1)
         if unread:
             errors.insert(
                 0,
@@ -972,6 +972,21 @@ class Runner:
         """Whether the read found pictures on the page (a plain page has none)."""
         with store.session() as s:
             return (s.scalar(select(func.count()).select_from(Figure).where(Figure.page_id == page.id)) or 0) > 0
+
+    def rebuild_again(self, page: Page) -> None:
+        """`rebuild_one` for a page already set once (from its first layout, failing the gate): its first PDF kept aside, and put back if
+        this setting cannot be made at all, so a fault in the second try never leaves the page a scan (review)."""
+        out = files.rebuilt_pdf(page.book_id, page.id)
+        kept = out + ".first.pdf"
+        if os.path.isfile(out):
+            os.replace(out, kept)
+        try:
+            self.rebuild_one(page)
+        except Exception:
+            if os.path.isfile(kept):
+                os.replace(kept, out)
+            raise
+        files.remove(kept)
 
     def relayout(self, pages: list[Page], bulk: ahead.Ahead) -> list[Page]:
         """The pages' layouts read again by the fallback model, in one bulk call, and kept (the first one's model as `first_model`); the pages

@@ -729,3 +729,36 @@ def test_a_page_whose_layout_call_failed_is_asked_again_and_never_set_without_on
     again = next(p for p in pages_of(b) if p.id == page.id)
     assert again.ocr["layout"]["groups"]
     assert os.path.isfile(files.rebuilt_pdf(b, page.id))
+
+
+def test_a_second_try_that_cannot_be_made_keeps_the_first_setting(make_book, fake_models):
+    """A page that failed from its first layout is laid out again and set again; when that setting cannot be made at all (its fit fails),
+    the first PDF is put back, so the page is never left a scan (review)."""
+    from books import tesseract_ocr
+
+    answers = models_answers(fake_models)
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
+    b = make_book()
+    fake_models.results = answers
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    worst = min((p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"]), key=lambda p: p.ocr_conf)
+    draw, tries = answers["page-build"], []
+
+    def page_build(params):
+        pid = int(os.path.basename(params.get("out", "0")).split(".")[0]) if params.get("font_fit") else 0
+        if pid == worst.id:
+            tries.append(pid)
+            if len(tries) > 1:
+                raise RuntimeError("the fit failed")
+            got = draw(params)  # a first setting that fails the gate (the stand-in draws no words)
+            return got
+        got = draw(params)
+        if pid:
+            shutil.copyfile(files.ocr_pdf(b, pid), params["out"])
+        return got
+
+    fake_models.results = {**answers, "page-build": page_build}
+    r.run(pipeline.Task(b, ("rebuild",)))
+    assert len(tries) == 2  # set from its first layout, then again from the fallback's
+    assert os.path.isfile(files.rebuilt_pdf(b, worst.id))  # the first setting, put back
+    assert not os.path.exists(files.rebuilt_pdf(b, worst.id) + ".first.pdf")
