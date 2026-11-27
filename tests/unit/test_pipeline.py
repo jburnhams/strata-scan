@@ -695,3 +695,37 @@ def test_a_leaf_keeps_its_writing_on_white_and_a_cover_is_cut_to_the_book(make_b
     with store.session() as s:
         s.get(Page, cover.id).kind = "picture"  # a person says it is a picture: made again
     assert not pipeline.made(next(p for p in pages_of(b) if p.id == cover.id))
+
+
+def test_a_page_whose_layout_call_failed_is_asked_again_and_never_set_without_one(make_book, fake_models, monkeypatch):
+    """A layout call that got no answer (strata-models restarted during the read) is asked again, in bulk, before the page is set; while it
+    still gets none the page is not set, and the book says why."""
+    from books import tesseract_ocr
+
+    monkeypatch.setenv("STRATASCAN_LAYOUT_FALLBACK", "off")
+    fake_models.results = models_answers(fake_models)
+    r = pipeline.Runner(ocr=tesseract_ocr, correct=None, reread=None, run_model=layout.models_run)
+    b = make_book()
+    r.run(pipeline.Task(b, ("import", "detect", "read")))
+    page = next(p for p in pages_of(b) if p.kind == "text" and p.ocr and p.ocr["layout"].get("groups"))
+    lost = {"model": "claude-haiku-5-5-api", "error": "strata-models is not running (connection refused)"}
+
+    def lose_layout():
+        with store.session() as s:
+            row = s.get(Page, page.id)
+            row.ocr = dict(row.ocr, layout=lost)
+        files.remove(files.rebuilt_pdf(b, page.id))
+
+    lose_layout()
+    fake_models.fail("refused", role="vision-language")  # the one layout call asked again fails too
+    fake_models.jobs.clear()
+    r.run(pipeline.Task(b, ("rebuild",), (page.id,)))
+    assert not os.path.isfile(files.rebuilt_pdf(b, page.id))  # not set as one block of text
+    assert "layout could not be read" in book(b).error
+    fake_models.jobs.clear()
+    r.run(pipeline.Task(b, ("rebuild",), (page.id,)))
+    asked = [j for j in fake_models.jobs if j["params"].get("preset") == "page-layout-fix-v2"]
+    assert [(j["model"], j["batch"]) for j in asked] == [("claude-haiku-5-5-api", True)]
+    again = next(p for p in pages_of(b) if p.id == page.id)
+    assert again.ocr["layout"]["groups"]
+    assert os.path.isfile(files.rebuilt_pdf(b, page.id))

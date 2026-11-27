@@ -43,13 +43,18 @@ class LayoutError(RuntimeError):
     """A failure to show the person, in words."""
 
 
+class CallError(LayoutError):
+    """A model was not reached, or its job failed: no answer at all, unlike an answer that was no layout. A page whose layout call failed is
+    asked again before it is set, never set without one (Jonathan, 2026-11-27)."""
+
+
 def models_run(role: str, params: dict[str, Any], model: str | None) -> Mapping[str, Any]:
     try:
         return sm.run(role, params, app=APP, model=model)
     except sm.Unavailable as e:
-        raise LayoutError(f"strata-models is not running ({e})") from e
+        raise CallError(f"strata-models is not running ({e})") from e
     except sm.JobFailed as e:
-        raise LayoutError(f"strata-models could not do it ({role}): {e}") from e
+        raise CallError(f"strata-models could not do it ({role}): {e}") from e
 
 
 def plain(ocr: Mapping[str, Any]) -> dict[str, Any]:

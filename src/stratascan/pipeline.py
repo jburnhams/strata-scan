@@ -302,7 +302,7 @@ class Runner:
         run, correct = self.run_model, self.correct
         if run is not None:
             self.run_model = bulk.wrap(
-                run, lambda role, e: layout.LayoutError(f"strata-models could not do it ({role}): {e}")
+                run, lambda role, e: layout.CallError(f"strata-models could not do it ({role}): {e}")
             )
         if correct is not None:
             plain = correct
@@ -623,7 +623,8 @@ class Runner:
             return layout.read_layout(png, r, model, scan_dpi(page), self.run_model, groups)
         except layout.LayoutError as e:
             log.warning("page %s: layout failed: %s", page.id, e)
-            return {"model": model, "error": str(e)}
+            # `call`: no answer came (the model was not reached, its job failed): asked again before the page is set (unread_layouts)
+            return {"model": model, "error": str(e), "call": isinstance(e, layout.CallError)}
 
     def stage_rebuild(self, book_id: int, pages: tuple[int, ...] | None = None) -> None:
         with store.session() as s:
@@ -647,6 +648,7 @@ class Runner:
         # Every Claude call in bulk, in rounds (Jonathan, 2026-11-27: none sent one at a time): the book's font shortlist from a sample of its
         # pages; then each page's line fix and second reading while every page is set from its first (cheap) layout; then, for the pages that
         # failed, their layouts read again by the fallback model, and those pages set again. The type fits stay one at a time.
+        todo, unread = self.unread_layouts(todo)
         self.sample_faces(book_id)
         deferred: list[Page] = []
         with self.queued_ahead(self.rebuild_calls(todo), batch=True) as bulk:
@@ -654,8 +656,15 @@ class Runner:
             if deferred:
                 again = self.relayout(deferred, bulk)
                 errors += self._each(book_id, again, self.rebuild_one, at_once=1)
+        if unread:
+            errors.insert(
+                0,
+                f"{len(unread)} pages were not set, as their layout could not be read ({unread[0]}): set the book again to ask once more",
+            )
         if errors:
-            self._progress(book_id, error=f"{len(errors)} of {len(todo)} pages could not be set again: {errors[0]}")
+            self._progress(
+                book_id, error=f"{len(errors)} of {len(todo) + len(unread)} pages could not be set again: {errors[0]}"
+            )
 
     def rebuild_one(self, page: Page, deferred: list[Page] | None = None) -> None:
         """Set one page (or make it as a picture page). `deferred`: where a page that fails from a first layout the fallback model could read
@@ -904,6 +913,65 @@ class Runner:
             return
         with open(files.path(book_id, "faces.json"), "w", encoding="utf-8") as f:
             json.dump({"model": layout.PROPOSE_MODEL, "pages": [p.id for p in sample], "answers": answers}, f)
+
+    def unread_layouts(self, pages: list[Page]) -> tuple[list[Page], list[str]]:
+        """(the pages to set, why each left out was). A text page whose layout call got no answer (strata-models down or its job failed:
+        `call`, or such an error written before that was told apart) is asked again, in one bulk call, by the layout model; one still with
+        none is not set (Jonathan, 2026-11-27: a failed layout call must not let the page be set as one block of text)."""
+        model = settings.layout_model()
+        run = self.run_model
+
+        def failed(p: Page) -> bool:
+            lay = cast("dict[str, Any]", (p.ocr or {}).get("layout") or {})
+            err = str(lay.get("error") or "")
+            return bool(err) and (bool(lay.get("call")) or err.startswith("strata-models")) and typeset(p)
+
+        missing = [p for p in pages if failed(p)]
+        if not missing or model is None or run is None:
+            return [p for p in pages if p not in missing], [
+                str((p.ocr or {}).get("layout", {}).get("error")) for p in missing
+            ]
+        planned: list[tuple[Page, str, str]] = []
+        why: dict[int, str] = {}
+        for p in missing:
+            png = files.page_png(p.book_id, p.id)
+            try:
+                context = layout.numbered(p.ocr or {}, run)
+            except layout.LayoutError as e:
+                why[p.id] = str(e)
+                continue
+            groups = None if self.pictured(p) else layout.plain_groups(context)
+            if groups is not None:  # a plain page: laid out from its own lines, as the read would have
+                planned.append((p, png, ""))
+            else:
+                planned.append((p, png, context))
+        with self.queued_ahead(
+            [("vision-language", layout.layout_params(png, c), model) for _, png, c in planned if c], batch=True
+        ):
+            for p, png, c in planned:
+                ask = self.run_model or run
+                try:
+                    groups = None if c else layout.plain_groups(layout.numbered(p.ocr or {}, ask))
+                    laid: dict[str, Any] = layout.read_layout(png, p.ocr or {}, model, scan_dpi(p), ask, groups)
+                except layout.CallError as e:
+                    why[p.id] = str(e)
+                    continue
+                except layout.LayoutError as e:  # an answer, but no layout: set from its own lines, as before
+                    laid = {"model": model, "error": str(e)}
+                with store.session() as s:
+                    row = s.get(Page, p.id)
+                    if row is not None and row.ocr is not None:
+                        row.ocr = dict(row.ocr, layout=laid)
+                        s.flush()
+                        s.expunge(row)
+                        p.ocr = row.ocr
+        left = [p for p in pages if p.id not in why]
+        return left, [f"page {p.position}: {why[p.id]}" for p in pages if p.id in why]
+
+    def pictured(self, page: Page) -> bool:
+        """Whether the read found pictures on the page (a plain page has none)."""
+        with store.session() as s:
+            return (s.scalar(select(func.count()).select_from(Figure).where(Figure.page_id == page.id)) or 0) > 0
 
     def relayout(self, pages: list[Page], bulk: ahead.Ahead) -> list[Page]:
         """The pages' layouts read again by the fallback model, in one bulk call, and kept (the first one's model as `first_model`); the pages
