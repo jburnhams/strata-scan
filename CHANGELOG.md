@@ -4,6 +4,12 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-26
 
+**A patterned leaf stays within its page crop, and photographs and patterns read as text are not set in type (branch `pattern-crop`)**
+Review of PR 19: a marbled endpaper on one side of a two-page scan was cut from the whole scan, bringing the other page with it.
+- `pipeline.py` `rebuild_picture`: only a cover or the book photographed is cut from its whole scan; a pattern keeps its page crop. `book_in` does nothing for one side of a spread.
+- And from the remake of both books: a page that is the book photographed is cut to the book even when the read found a picture on it (the 1828 book's page 3, an edge shot, came out as that "picture" whitened like an engraving); a text page that is the book photographed or a pattern is not set in type (the 1874 book's marbled endpaper, page 42, had OCR letters "AAA", "ARAA" and was set as type). Both pages were put right in the live books by marking them cover and picture. And a page that is not a picture page is its marks lifted onto white even when the reader boxed them as pictures (two of the 1828 book's endpapers, with a bookplate and a signature, came out on cream boxes).
+- `tests/unit/test_pipeline.py`.
+
 **Handwriting and bookplates kept on white, covers trimmed to the book, and pages already made not made again (branch `keep-marks`)**
 Jonathan: keep what is on the near-empty pages (endpapers with a bookplate, an owner's name, pencilled notes; photographs of the spine and edges), cropped to the edge of the page or book, ideally the handwriting alone on white; err on the side of keeping content; use the paper colour seen on text pages to take it out. And: most pages don't need redoing, so don't redo them.
 - **new** `marks.py`: `lift` takes the paper out of a page twice: its tone (each pixel over the lightest paper near it) and its colour (`paper_hue`, from the book's fullest text pages: a mark in the paper's own hue that is more colour than dark is a stain or foxing). What is left, marks with a dark seed and their faint strokes, in clusters that span a word, is kept on white; a lone speck and the leaf's edge are not. `backdrop` and `book_box` find the book in a photograph of it (a scan with a plain edge); `dark` tells a page that is the book photographed (cloth, a spine) from a leaf.
