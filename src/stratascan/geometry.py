@@ -196,10 +196,7 @@ def find_page(img: Image) -> PageGuess:
         # whole, which a person corrects in one drag; cutting to the label would hide the cover.
         return PageGuess(0.0, (0, 0, w, h), 0.2)
     if region is None or (region > 0).mean() >= FULL:
-        angle = text_skew(img) or 0.0
-        rw, rh = rotated_size(w, h, angle)
-        mx, my = (rw - w) // 2, (rh - h) // 2  # the scan is the page: cut back to its own size, not the grown canvas
-        return PageGuess(angle, clamp((mx, my, w, h), rw, rh), 0.5 if region is None else 0.9)
+        return whole_page(img, 0.5 if region is None else 0.9)
     cnts, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     points = np.asarray(
         [pt for c in cnts for pt in np.asarray(c, dtype=np.int32).reshape(-1, 2).tolist()], dtype=np.int32
@@ -232,6 +229,34 @@ def find_page(img: Image) -> PageGuess:
     else:
         angle = lean
     return PageGuess(round(angle, 2), crop, round(min(1.0, fill), 2))
+
+
+def whole_page(img: Image, confidence: float = 0.9) -> PageGuess:
+    """The scan as the page: levelled by its type, cut back to its own size (not the canvas a turn grows)."""
+    h, w = img.shape[:2]
+    angle = text_skew(img) or 0.0
+    rw, rh = rotated_size(w, h, angle)
+    mx, my = (rw - w) // 2, (rh - h) // 2
+    return PageGuess(angle, clamp((mx, my, w, h), rw, rh), confidence)
+
+
+BEDLESS = 0.7  # share of a book's scans whose page is nearly all the scan (WHOLE) for the book to have been scanned with no bed
+WHOLE = 0.9  # share of its scan a page covers to be the whole scan
+PATCH = 0.6  # in a book with no bed, a single page found covering less than this share of its scan is a patch of a plate, not the page
+
+
+def unbedded(found: dict[int, tuple[list[PageGuess], tuple[int, int]]]) -> set[int]:
+    """The scans (ids of `found`: each scan's pages and its (width, height)) whose one page should be the whole scan: in a book whose
+    scans are mostly the page already, a page found much smaller than its scan. A full-page plate is dark ink to its edges, so the light
+    region `find_page` takes for the paper is a strip of margin; a book photographed on a bed keeps what was found."""
+
+    def share(pages: list[PageGuess], size: tuple[int, int]) -> float:
+        return sum(p.crop[2] * p.crop[3] for p in pages) / max(1, size[0] * size[1])
+
+    shares = {sid: share(pages, size) for sid, (pages, size) in found.items()}
+    if not shares or sum(v >= WHOLE for v in shares.values()) < BEDLESS * len(shares):
+        return set()
+    return {sid for sid, v in shares.items() if v < PATCH and len(found[sid][0]) == 1}
 
 
 def gutter(page: Image) -> int | None:

@@ -2,6 +2,14 @@
 
 Newest first, grouped by day. One entry per change, in the same commit or PR as the change.
 
+## 2026-11-27
+
+**A full-page plate in a book scanned with no bed is the whole scan (branch `no-bed`)**
+Jonathan added a third book (Punch & Judy: a history, 168 scans, each already the page). Seven of its scans were cut to a strip or a patch: full-page plates, whose dark ink runs to the edges, so the light region the page finder takes for the paper was a strip of margin (five were called blank or had no words), and the inside of the front flap.
+- `geometry.py`: `unbedded`: in a book where most scans are the page already (`BEDLESS` of them covering `WHOLE` of their scan), a single page found covering less than `PATCH` of its scan is the whole scan; a book on a bed, and spreads, keep what was found. `whole_page`: the scan as the page, levelled by its type (what `find_page` already did with no bed).
+- `pipeline.py` `stage_detect`: every scan's pages are found first, then the book is looked at as a whole before they are written. On the three books: none changes in the 1874 and 1828 books; the third's scans 2, 77, 103, 109, 110, 111 and 113, the seven that were wrong, become whole.
+- `tests/unit/test_geometry.py`.
+
 ## 2026-11-26
 
 **A patterned leaf stays within its page crop, and photographs and patterns read as text are not set in type (branch `pattern-crop`)**

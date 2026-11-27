@@ -99,3 +99,22 @@ def test_a_blank_page_with_no_bed_is_the_whole_scan_not_a_patch_of_it():
     g = G.find_page(bgr(im))
     assert g.crop == (0, 0, W, H)
     assert g.confidence == 0.9
+
+
+def test_in_a_book_with_no_bed_a_page_found_as_a_strip_is_the_whole_scan():
+    """Ten scans that are the page already, one a full-page plate whose light patch was taken for the page: that one is the whole scan.
+    A book on a bed (most pages well inside their scans) keeps what was found; a spread is never made whole."""
+    size = (1000, 1400)
+    full = [G.PageGuess(0.0, (0, 0, 990, 1390), 0.9)]
+    strip = [G.PageGuess(0.0, (900, 0, 100, 1400), 0.9)]
+    found = dict.fromkeys(range(9), (full, size)) | {9: (strip, size)}
+    assert G.unbedded(found) == {9}
+    spread = [G.PageGuess(0.0, (0, 0, 300, 1400), 0.9, "left"), G.PageGuess(0.0, (300, 0, 200, 1400), 0.9, "right")]
+    assert G.unbedded(found | {10: (spread, size)}) == {9}
+    bed = [G.PageGuess(0.0, (100, 100, 700, 1100), 0.9)]
+    assert G.unbedded(dict.fromkeys(range(9), (bed, size)) | {9: (strip, size)}) == set()
+    assert G.unbedded({}) == set()
+    plate = np.full((700, 500, 3), 40, np.uint8)
+    got = G.whole_page(plate)
+    assert got.crop == (0, 0, 500, 700)
+    assert got.angle == 0.0
