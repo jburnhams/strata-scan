@@ -412,11 +412,26 @@ class Runner:
             raise StageError("the book has no scans: import it first")
         last = max(x.position for x in scans)
 
-        def detect(scan: Scan) -> None:
+        guesses: dict[int, tuple[list[geometry.PageGuess], tuple[int, int]]] = {}
+
+        def guess(scan: Scan) -> None:
             if scan.id in hand:
                 return
             img = read_image(os.path.join(files.book_dir(book_id), scan.file))
-            found = geometry.find_pages(img)
+            guesses[scan.id] = (geometry.find_pages(img), (img.shape[1], img.shape[0]))
+
+        errors = self._each(book_id, scans, guess)
+        whole = geometry.unbedded(guesses)
+
+        def detect(scan: Scan) -> None:
+            if scan.id not in guesses:
+                return
+            found = guesses[scan.id][0]
+            if scan.id in whole:
+                # a book scanned without a bed round its pages (each scan already the page): a page found much smaller than its scan is a
+                # light patch of a full-page plate, not the page (Jonathan's third book: five plates cut to strips of margin)
+                img = read_image(os.path.join(files.book_dir(book_id), scan.file))
+                found = [geometry.whole_page(img)]
             with store.session() as s:
                 old = list(s.scalars(select(Page.id).where(Page.scan_id == scan.id)))
                 s.execute(delete(Page).where(Page.scan_id == scan.id))
@@ -447,7 +462,7 @@ class Runner:
                         )
                     )
 
-        errors = self._each(book_id, scans, detect)
+        errors += self._each(book_id, scans, detect)
         renumber(book_id)
         with store.session() as s:
             q = select(Page).where(Page.book_id == book_id, Page.rendered.is_(False))
