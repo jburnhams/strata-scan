@@ -28,6 +28,7 @@ default they are the client."""
 
 import json
 import logging
+import math
 import os
 import threading
 from collections import deque
@@ -768,7 +769,7 @@ class Runner:
             if lifted.share > marks.PATTERN:
                 made["whole"] = True  # a pattern: the leaf as its page crop has it, one side of a spread (review)
             elif lifted.box is not None:
-                cut = marks.save(lifted, os.path.join(crops, f"{page.id}.marks.png"))
+                cut = marks.save(lifted, os.path.join(crops, f"{page.id}.marks.jpg"))
                 boxes, made["marks"] = [lifted.box], cut
         if made.get("whole"):
             book = self.book_in(page, os.path.join(crops, f"{page.id}.book.png")) if made.get("book") else None
@@ -1188,10 +1189,19 @@ def clean_text(ocr: dict[str, Any], sure_words: int, kind: str = "text") -> str:
     return "\n".join(str(lines[i]["text"]) for i in kept_lines(ocr, sure_words, kind))
 
 
+A4 = (8.27, 11.69)  # inches: the largest a book's page is taken to be (Jonathan, 2026-11-28)
+
+
 def scan_dpi(page: Page) -> int:
+    """The scan's resolution, raised so that the scan is at most A4: an Internet Archive PDF can give its pages as their pixels at 72 dpi,
+    which made the third book's pages 32 by 45 inches (and every picture on them too large to shrink)."""
     with store.session() as s:
         scan = s.get(Scan, page.scan_id)
-    return scan.dpi if scan and scan.dpi else 300
+    dpi = (scan.dpi if scan is not None else None) or 300
+    if page.crop_w and page.crop_h:  # the page, not its scan: a spread is two pages wide
+        short, long = sorted((page.crop_w, page.crop_h))
+        dpi = max(dpi, math.ceil(short / A4[0]), math.ceil(long / A4[1]))
+    return dpi
 
 
 def renumber(book_id: int) -> None:

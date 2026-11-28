@@ -2,6 +2,15 @@
 
 Newest first, grouped by day. One entry per change, in the same commit or PR as the change.
 
+## 2026-11-28
+
+**Pictures as JPEGs, grey unless coloured; a page at most A4 (branch `smaller-pdfs`)**
+Jonathan, on the third book's 287 MB PDF: "we should not be storing as lossless. treat a book's pages as at most A4 size. use greyscale where little evidence of colour". Its 45 picture pages were 270 MB of it: each plate went in losslessly at full scan size, about 20 MB; and the Internet Archive PDF gave its pages as their pixels at 72 dpi, so each page was 32 by 45 inches and no compression would shrink its pictures.
+- `layout.py`: `save_picture` writes every picture a rebuilt page carries as a JPEG (quality `JPEG`, 85), in grey unless `has_colour` finds coloured ink once the paper is white (`whitened`; `COLOUR`, `COLOURED`): an engraving on browned paper is grey, a hand-coloured plate or a red stamp is not. `cut_picture` and `cut_as_is` write through it. **New** `with_figure_pictures`: a text page's pictures are cut here and given to page-build, which draws them as given; its own crops were lossless and always grey, so a coloured plate on a text page lost its colour.
+- `marks.py` `save`: the lifted marks through `save_picture`.
+- `pipeline.py` `scan_dpi`: raised so that the page (its crop, not its scan: a spread is two pages) is at most A4 (`A4`).
+- `tests/unit/test_layout.py`, `test_pipeline.py`, `test_cli.py` (a test page cut a little larger than A4 is read a little finer).
+
 ## 2026-11-27
 
 **A dense page of type is not a pattern (branch `dense-text`)**

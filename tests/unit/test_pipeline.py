@@ -669,7 +669,7 @@ def test_a_leaf_keeps_its_writing_on_white_and_a_cover_is_cut_to_the_book(make_b
         if j["role"] == "page-build" and "out" in j["params"]
     }
     (mark,) = drawn[leaf.id]["groups"]["figures"]
-    assert mark["image"].endswith(f"{leaf.id}.marks.png")
+    assert mark["image"].endswith(f"{leaf.id}.marks.jpg")
     assert not drawn[leaf.id]["rules"]
     assert mark["box"][0] < 300  # where the name is on the leaf, in thousandths
     assert mark["box"][1] < 300
@@ -762,3 +762,18 @@ def test_a_second_try_that_cannot_be_made_keeps_the_first_setting(make_book, fak
     assert len(tries) == 2  # set from its first layout, then again from the fallback's
     assert os.path.isfile(files.rebuilt_pdf(b, worst.id))  # the first setting, put back
     assert not os.path.exists(files.rebuilt_pdf(b, worst.id) + ".first.pdf")
+
+
+def test_a_page_is_taken_to_be_at_most_a4(make_book, runner):
+    """A PDF that gives its pages as their pixels at 72 dpi (the third book: 32 by 45 inches) is read at the resolution that makes each page
+    A4; a page already smaller keeps its scan's."""
+    b = make_book()
+    runner.run(pipeline.Task(b, ("import", "detect")))
+    page = pages_of(b)[0]
+    with store.session() as s:
+        s.get(Scan, page.scan_id).dpi = 72
+    dpi = pipeline.scan_dpi(page)
+    assert dpi == max(-(-page.crop_w * 100 // 827), -(-page.crop_h * 100 // 1169))
+    with store.session() as s:
+        s.get(Scan, page.scan_id).dpi = 2000
+    assert pipeline.scan_dpi(page) == 2000

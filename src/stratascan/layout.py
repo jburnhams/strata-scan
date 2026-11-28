@@ -257,44 +257,88 @@ def read_layout(
     return {"model": model, "groups": groups, "blocks": blocks}
 
 
-COLOUR = 40  # median saturation (0-255) of a picture's ink above which it is a coloured print, kept in colour
+COLOUR = 60  # saturation (0-255), once the paper is made white, above which a pixel is coloured ink
+COLOURED = 0.02  # share of a picture's pixels that are coloured ink for it to be kept in colour; less is grey (Jonathan, 2026-11-27)
+JPEG = 85  # quality of the pictures a rebuilt page carries: lossy, as a scan's picture already is (lossless made a plate 20 MB)
 
 
-def cut_picture(png: str, box: tuple[int, int, int, int], out: str) -> str:
-    """The picture at `box` (page pixels) cut from the scan with its paper made white: a black-and-white engraving in grey, a coloured print
-    in colour (each channel over the paper's own tone, the 90th percentile). Written to `out`; its path."""
+def whitened(rgb: Any) -> Any:
+    """`rgb` (float, h x w x 3) with each channel over the paper's own tone (its 90th percentile): yellowed paper white, its ink as printed."""
+    import numpy as np
+
+    npa: Any = np  # numpy's percentile and clip overloads are partially unknown to pyright
+    paper = np.maximum(npa.percentile(rgb.reshape(-1, 3), 90, axis=0), 1.0)
+    return npa.clip(rgb * (255.0 / paper), 0, 255)
+
+
+def has_colour(rgb: Any) -> bool:
+    """Whether a picture (float RGB) shows real colour once its paper is white: a hand-coloured plate, a red stamp, a cloth cover; not an
+    engraving on browned paper, nor foxing (a few spots)."""
     import numpy as np
     from PIL import Image
 
-    npa: Any = np  # numpy's percentile, clip and median overloads are partially unknown to pyright
+    flat = whitened(rgb).astype(np.uint8)
+    hsv = np.asarray(Image.fromarray(flat, "RGB").convert("HSV"), dtype=np.uint8)
+    inked = (hsv[..., 1] > COLOUR) & (hsv[..., 2] > 50)
+    return float(inked.mean()) > COLOURED
+
+
+def save_picture(img: Any, out: str) -> str:
+    """`img` (a PIL image) written to `out` as a JPEG, in grey unless it shows colour (`has_colour`); its path."""
+    import numpy as np
+
+    rgb = img.convert("RGB")
+    keep = rgb if has_colour(np.asarray(rgb, dtype=np.float32)) else rgb.convert("L")
+    keep.save(out, "JPEG", quality=JPEG, optimize=True)
+    return out
+
+
+def cut_picture(png: str, box: tuple[int, int, int, int], out: str) -> str:
+    """The picture at `box` (page pixels) cut from the scan with its paper made white, as a JPEG at `out` (`save_picture`): grey for an
+    engraving, in colour for a coloured print. Its path."""
+    import numpy as np
+    from PIL import Image
 
     x, y, w, h = box
     with Image.open(png) as im:
         part = im.convert("RGB").crop((x, y, x + w, y + h))
-    rgb = np.asarray(part, dtype=np.float32)
-    hsv = np.asarray(part.convert("HSV"), dtype=np.float32)
-    grey = rgb.mean(axis=2)
-    inked = grey < 0.85 * float(npa.percentile(grey, 90))
-    coloured = bool(inked.any()) and float(npa.median(hsv[..., 1][inked])) > COLOUR
-    if coloured:
-        paper = np.maximum(npa.percentile(rgb.reshape(-1, 3), 90, axis=0), 1.0)
-        img = Image.fromarray(npa.clip(rgb * (255.0 / paper), 0, 255).astype(np.uint8), "RGB")
-    else:
-        img = Image.fromarray(
-            npa.clip(grey * (255.0 / max(float(npa.percentile(grey, 90)), 1.0)), 0, 255).astype(np.uint8), "L"
-        )
-    img.save(out)
-    return out
+    return save_picture(Image.fromarray(whitened(np.asarray(part, dtype=np.float32)).astype(np.uint8), "RGB"), out)
 
 
 def cut_as_is(png: str, box: tuple[int, int, int, int], out: str) -> str:
-    """The scan at `box` (page pixels), as it is, written to `out`; its path."""
+    """The scan at `box` (page pixels), its paper left as it is (a cover, a pattern), as a JPEG at `out` (`save_picture`); its path."""
     from PIL import Image
 
     x, y, w, h = box
     with Image.open(png) as im:
-        im.convert("RGB").crop((x, y, x + w, y + h)).save(out)
-    return out
+        return save_picture(im.convert("RGB").crop((x, y, x + w, y + h)), out)
+
+
+def with_figure_pictures(groups: Mapping[str, Any], png: str, folder: str) -> dict[str, Any]:
+    """The layout's groups with each picture (not a rule) given its own cut (`cut_picture`, a JPEG in `folder`), which page-build draws as
+    given: its own crops were lossless grey, so a hand-coloured plate lost its colour and a page with a plate weighed megabytes."""
+    from PIL import Image
+
+    figs = cast("list[dict[str, Any]]", groups.get("figures") or [])
+    if not figs:
+        return dict(groups)
+    with Image.open(png) as im:
+        wide, high = im.size
+    os.makedirs(folder, exist_ok=True)
+    out: list[dict[str, Any]] = []
+    for k, f in enumerate(figs):
+        box = cast("list[float]", f.get("box") or [])
+        if f.get("kind", "figure") != "figure" or f.get("image") or len(box) != 4:
+            out.append(f)
+            continue
+        x0, y0 = max(0, round(box[0] * wide / 1000)), max(0, round(box[1] * high / 1000))
+        x1, y1 = min(wide, round(box[2] * wide / 1000)), min(high, round(box[3] * high / 1000))
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            out.append(f)
+            continue
+        name = f"{os.path.splitext(os.path.basename(png))[0]}.fig{k}.jpg"
+        out.append(dict(f, image=cut_picture(png, (x0, y0, x1 - x0, y1 - y0), os.path.join(folder, name))))
+    return dict(groups, figures=out)
 
 
 def picture_page(
@@ -325,7 +369,7 @@ def picture_page(
             "image": images[k]
             if images is not None
             else (cut_as_is if whole else cut_picture)(
-                png, (x, y, w, h), os.path.join(folder, f"{os.path.basename(out)}.{k}.png")
+                png, (x, y, w, h), os.path.join(folder, f"{os.path.basename(out)}.{k}.jpg")
             ),
         }
         for k, (x, y, w, h) in enumerate(boxes)
@@ -376,11 +420,14 @@ def rebuild_page(
     if faces:
         asked.update(candidates=faces, propose=False)  # the book's shortlist: no model asked for one
     fit = run("font-match", asked, None)
+    crops = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(out))), "crops"
+    )  # beside the book's rebuilt/ (files.py)
     run(
         "page-build",
         {
             "ocr": base,
-            "groups": groups,
+            "groups": with_figure_pictures(groups, png, crops),
             "texts": texts,
             "font_fit": dict(fit),
             "image": png,

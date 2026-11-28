@@ -283,3 +283,34 @@ def test_a_picture_page_is_its_pictures_on_clean_paper(tmp_path):
     assert Image.open(out).mode == "RGB"
     assert Image.open(out).getpixel((150, 150))[1] < 80  # still red
     assert Image.open(out).getpixel((10, 10)) == (255, 255, 255)  # the paper made white
+
+
+def test_pictures_are_jpegs_in_grey_unless_coloured(tmp_path):
+    """An engraving on browned paper is a grey JPEG; a hand-coloured print stays in colour; a figure of the layout is given its own cut,
+    and a rule is left to page-build."""
+    from PIL import Image, ImageDraw
+
+    page = Image.new("RGB", (1000, 1400), (225, 205, 165))  # browned paper
+    d = ImageDraw.Draw(page)
+    for y in range(120, 480, 6):  # an engraving's hatching, in brown-black ink
+        d.line([(100, y), (500, y + 40)], fill=(60, 50, 40), width=2)
+    d.rectangle([550, 700, 900, 1100], fill=(190, 40, 40))  # a coloured plate's red
+    d.rectangle([600, 1150, 850, 1250], fill=(40, 70, 170))
+    png = tmp_path / "p.png"
+    page.save(png)
+    grey = layout.cut_picture(str(png), (80, 100, 450, 450), str(tmp_path / "e.jpg"))
+    with Image.open(grey) as im:
+        assert (im.format, im.mode) == ("JPEG", "L")
+        assert im.getpixel((5, 5)) > 240  # the paper white
+    coloured = layout.cut_picture(str(png), (520, 650, 420, 650), str(tmp_path / "c.jpg"))
+    with Image.open(coloured) as im:
+        assert (im.format, im.mode) == ("JPEG", "RGB")
+    groups = {
+        "blocks": [],
+        "figures": [{"box": [80, 70, 580, 400], "kind": "figure"}, {"box": [0, 500, 1000, 502], "kind": "rule"}],
+    }
+    got = layout.with_figure_pictures(groups, str(png), str(tmp_path / "crops"))
+    fig, rule = got["figures"]
+    assert fig["image"].endswith(".fig0.jpg")
+    assert "image" not in rule
+    assert layout.with_figure_pictures({"blocks": []}, str(png), str(tmp_path / "crops")) == {"blocks": []}
