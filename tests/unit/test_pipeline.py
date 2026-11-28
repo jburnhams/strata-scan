@@ -1,6 +1,7 @@
 """The stages on a 4-scan book made in the test, with the real Tesseract standing in for strata-models (the `runner` fixture): what a
 person gets (pages, text, pictures, kinds, labels, files) and that their hand work survives a second run."""
 
+import json
 import os
 import shutil
 import zipfile
@@ -687,10 +688,20 @@ def test_a_leaf_keeps_its_writing_on_white_and_a_cover_is_cut_to_the_book(make_b
         line = {"text": "AAA ARAA", "box": [100, 100, 300, 40], "words": []}
         s.get(Page, leaf.id).ocr = dict(s.get(Page, leaf.id).ocr or {}, lines=[line])
         s.get(Page, leaf.id).text = "AAA ARAA"
+        s.get(Page, leaf.id).ocr_conf = 40.0  # the letters read unsurely, as the marbled endpaper's were
     fake_models.jobs.clear()
     r.run(pipeline.Task(b, ("rebuild",), (leaf.id,)))
     (pattern,) = [j["params"] for j in fake_models.jobs if j["role"] == "page-build" and "out" in j["params"]]
     assert pattern["image"] == files.page_png(b, leaf.id)  # kept within its page crop, not the whole scan (review)
+    assert not pattern.get("font_fit")
+    with store.session() as s:
+        s.get(Page, leaf.id).ocr_conf = 95.0  # read surely: text, whatever its paper (the third book's orange flap)
+    fake_models.jobs.clear()
+    r.run(pipeline.Task(b, ("rebuild",), (leaf.id,)))
+    assert any(j["role"] == "page-build" and j["params"].get("font_fit") for j in fake_models.jobs)  # set in type
+    with store.session() as s:
+        s.get(Page, leaf.id).ocr_conf = 40.0
+    r.run(pipeline.Task(b, ("rebuild",), (leaf.id,)))  # back to the pattern the rest of the test has
     assert all(pipeline.made(p) for p in pages_of(b) if p.id in (leaf.id, cover.id))
     with store.session() as s:
         s.get(Page, cover.id).kind = "picture"  # a person says it is a picture: made again
@@ -777,3 +788,21 @@ def test_a_page_is_taken_to_be_at_most_a4(make_book, runner):
     with store.session() as s:
         s.get(Scan, page.scan_id).dpi = 2000
     assert pipeline.scan_dpi(page) == 2000
+
+
+def test_a_books_shortlist_is_the_faces_its_sample_named_most(make_book, runner):
+    """The proposer's answers (JSON naming faces) are voted: the SHORTLIST faces most named, not every face any answer named."""
+    b = make_book()
+    runner.run(pipeline.Task(b, ("import",)))
+    answers = [
+        '{"class": "old-style", "faces": ["libre-caslon-text", "crimson-text", "sorts-mill-goudy"]}',
+        'Here: {"faces": ["libre-caslon-text", "cardo", "crimson-text"], "why": "bracketed serifs"}',
+        '{"faces": ["libre-caslon-text", "gelasio", "old-standard", "latin-modern", "fanwood-text", "source-serif-4"]}',
+        "not an answer",
+    ]
+    with open(files.path(b, "faces.json"), "w", encoding="utf-8") as f:
+        json.dump({"answers": answers}, f)
+    got = runner.book_faces(b)
+    assert got is not None
+    assert got[:2] == ["libre-caslon-text", "crimson-text"]
+    assert len(got) == pipeline.SHORTLIST

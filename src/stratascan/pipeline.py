@@ -31,7 +31,7 @@ import logging
 import math
 import os
 import threading
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -114,6 +114,10 @@ def plausible(before: str, after: str) -> bool:
 
 
 READER = "doctr-haiku-fix"  # the last route's reader: docTR's word boxes, Claude Haiku's text (strata-models, eval ocr-lines)
+READABLE = 60  # OCR confidence (0-100) over which a page is text, never a picture or a pattern; a marbled endpaper's letters were 40
+SHORTLIST = (
+    5  # faces in a book's shortlist: the most named by its sample's answers (thirteen made each word a face of its own)
+)
 SAMPLE = 6  # text pages of a book, spread through it, whose font shortlists together are the book's (book_faces)
 
 
@@ -675,8 +679,10 @@ class Runner:
         png = files.page_png(page.book_id, page.id)
         if typeset(page) and not os.path.isfile(png):
             render(page)
-        if not typeset(page) or marks.dark(png) or marks.lift(png, None).share > marks.PATTERN:
-            # a "text" page that is the book photographed, or marbled paper the OCR read letters in ("AAA", "ARAA"): no type to set
+        unsure = page.ocr_conf is None or page.ocr_conf < READABLE
+        if not typeset(page) or (unsure and (marks.dark(png) or marks.lift(png, None).share > marks.PATTERN)):
+            # a "text" page that is the book photographed, or marbled paper the OCR read letters in ("AAA", "ARAA", at 40 % sure): no type
+            # to set. A page read surely is text, whatever its paper (the third book's orange flap, read at 95 %, was taken for a pattern)
             self.rebuild_picture(page)
             return
         out = files.rebuilt_pdf(page.book_id, page.id)
@@ -882,6 +888,17 @@ class Runner:
         except (OSError, ValueError):
             return None
         answers = [str(a) for a in cast("list[Any]", got.get("answers") or []) if str(a).strip()]
+        votes: Counter[str] = Counter()
+        for a in answers:
+            try:
+                named: Any = cast("dict[str, Any]", json.loads(a[a.find("{") : a.rfind("}") + 1])).get("faces") or []
+            except ValueError:
+                continue
+            votes.update(str(f) for f in cast("list[Any]", named)[:SHORTLIST])
+        if votes:
+            # the faces most of its pages were said to be in: all the answers together named thirteen, and font-match fitting every word
+            # to the best of thirteen set a line's words in three faces (the third book's page 11, some looking bold)
+            return [f for f, _ in votes.most_common(SHORTLIST)]
         return answers or None
 
     def sample_faces(self, book_id: int) -> None:

@@ -295,14 +295,18 @@ def save_picture(img: Any, out: str) -> str:
 
 def cut_picture(png: str, box: tuple[int, int, int, int], out: str) -> str:
     """The picture at `box` (page pixels) cut from the scan with its paper made white, as a JPEG at `out` (`save_picture`): grey for an
-    engraving, in colour for a coloured print. Its path."""
+    engraving, in colour for a coloured print. The paper is the whole page's, not the picture's: a densely hatched engraving is mostly ink,
+    and whitened by itself its paper stayed a grey box. Its path."""
     import numpy as np
     from PIL import Image
 
+    npa: Any = np
     x, y, w, h = box
     with Image.open(png) as im:
-        part = im.convert("RGB").crop((x, y, x + w, y + h))
-    return save_picture(Image.fromarray(whitened(np.asarray(part, dtype=np.float32)).astype(np.uint8), "RGB"), out)
+        page = np.asarray(im.convert("RGB"), dtype=np.float32)
+    paper = np.maximum(npa.percentile(page[::4, ::4].reshape(-1, 3), 90, axis=0), 1.0)
+    part = npa.clip(page[y : y + h, x : x + w] * (255.0 / paper), 0, 255)
+    return save_picture(Image.fromarray(part.astype(np.uint8), "RGB"), out)
 
 
 def cut_as_is(png: str, box: tuple[int, int, int, int], out: str) -> str:
@@ -328,7 +332,9 @@ def with_figure_pictures(groups: Mapping[str, Any], png: str, folder: str) -> di
     out: list[dict[str, Any]] = []
     for k, f in enumerate(figs):
         box = cast("list[float]", f.get("box") or [])
-        if f.get("kind", "figure") != "figure" or f.get("image") or len(box) != 4:
+        if (
+            f.get("kind") == "rule" or f.get("image") or len(box) != 4
+        ):  # a layout names pictures figure, engraving, photo...
             out.append(f)
             continue
         x0, y0 = max(0, round(box[0] * wide / 1000)), max(0, round(box[1] * high / 1000))
