@@ -4,6 +4,11 @@ Newest first, grouped by day. One entry per change, in the same commit or PR as 
 
 ## 2026-11-28
 
+**A picture's colour judged against what is printed, not the whole picture (branch `colour-marks`)**
+The 1828 book's endpaper came out grey in its fourth version: its red bookplate is a small part of the lifted marks' picture (white round handwriting), under `COLOURED` of it.
+- `layout.py` `has_colour`: the share of coloured pixels among the printed ones (not white), `COLOURED` 5 %: the bookplate keeps its red; an engraving on browned paper stays grey.
+- `tests/unit/test_layout.py`.
+
 **A compare screen: each page as scanned against the same page in the finished PDF, and the pages to look at (branch `claude/project-thread-4o23es`)**
 Jonathan: a view of the original and the processed PDF at the same time, side by side page by page, above and below, as double-page spreads, and laid over each other with blend, difference, swipe and match options; strata-react's components made or changed for it; and per-page quality and match measures so only the bad pages need be looked at. The rebuild's quality gate (`gate.py`, worked on in another branch) is read, not changed or repeated: its verdict is one of the page's faults, and the new measures cover what it does not (the whole page, the pictures, pages that are not text).
 - **new** `compare.py`: `finished_preview` draws a page's finished PDF as wide as its preview (`previews/finished-<page>.jpg`) so overlays line up; `measure` is the gate's ink F1 (`gate.ink_of` on both sides, so a photograph kept whole agrees with itself (Codex on PR 26), and `gate.ink_f1`) over the whole page at 1000 px; `faults` in words: the gate's reasons, ink agreeing under `INK` (0.5), a finished page with almost none of the scan's ink (`LOST`: a picture cut short or left out, text not set), a page of another shape (`SHAPE`, 3 %; not covers, which are trimmed to the book). The marks are first guesses, not yet tried on the three books. Each result is kept in `previews/finished-<page>.json` and worked out again when either picture is newer. `spread` joins two pages into one picture.
