@@ -271,24 +271,28 @@ def whitened(rgb: Any) -> Any:
     return npa.clip(rgb * (255.0 / paper), 0, 255)
 
 
-def has_colour(rgb: Any) -> bool:
+def has_colour(rgb: Any, whiten: bool = True) -> bool:
     """Whether a picture (float RGB) shows real colour once its paper is white: a hand-coloured plate, a red stamp, a cloth cover; not an
     engraving on browned paper, nor foxing (a few spots)."""
     import numpy as np
     from PIL import Image
 
-    flat = whitened(rgb).astype(np.uint8)
+    # a cut picture is looked at with its paper made white (a browned leaf is no colour); a cover as it is, since whitening a red cloth
+    # takes its colour for the paper's and leaves only its black lettering (review)
+    npa: Any = np
+    flat = (whitened(rgb) if whiten else npa.clip(rgb, 0, 255)).astype(np.uint8)
     hsv = np.asarray(Image.fromarray(flat, "RGB").convert("HSV"), dtype=np.uint8)
     inked = (hsv[..., 1] > COLOUR) & (hsv[..., 2] > 50)
     return float(inked.mean()) > COLOURED
 
 
-def save_picture(img: Any, out: str) -> str:
-    """`img` (a PIL image) written to `out` as a JPEG, in grey unless it shows colour (`has_colour`); its path."""
+def save_picture(img: Any, out: str, as_is: bool = False) -> str:
+    """`img` (a PIL image) written to `out` as a JPEG, in grey unless it shows colour (`has_colour`; `as_is`: a cover or a pattern, looked
+    at without whitening); its path."""
     import numpy as np
 
     rgb = img.convert("RGB")
-    keep = rgb if has_colour(np.asarray(rgb, dtype=np.float32)) else rgb.convert("L")
+    keep = rgb if has_colour(np.asarray(rgb, dtype=np.float32), whiten=not as_is) else rgb.convert("L")
     keep.save(out, "JPEG", quality=JPEG, optimize=True)
     return out
 
@@ -315,7 +319,7 @@ def cut_as_is(png: str, box: tuple[int, int, int, int], out: str) -> str:
 
     x, y, w, h = box
     with Image.open(png) as im:
-        return save_picture(im.convert("RGB").crop((x, y, x + w, y + h)), out)
+        return save_picture(im.convert("RGB").crop((x, y, x + w, y + h)), out, as_is=True)
 
 
 def picture_box(

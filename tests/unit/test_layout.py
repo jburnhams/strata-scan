@@ -376,3 +376,19 @@ def test_one_picture_boxed_twice_is_drawn_once(tmp_path):
     }
     got = layout.with_figure_pictures(groups, str(png), str(tmp_path / "crops"))
     assert len(got["figures"]) == 1
+
+
+def test_a_red_cloth_cover_kept_as_it_is_stays_red(tmp_path):
+    """A cover cut as it is: most of it one colour (red cloth) with black lettering. Whitened, its red would be taken for the paper (review);
+    looked at as it is, it is colour. A grey cover stays grey."""
+    from PIL import Image, ImageDraw
+
+    cover = Image.new("RGB", (600, 900), (170, 30, 30))
+    ImageDraw.Draw(cover).rectangle([100, 100, 500, 200], fill=(10, 10, 10))
+    png = tmp_path / "c.png"
+    cover.save(png)
+    with Image.open(layout.cut_as_is(str(png), (0, 0, 600, 900), str(tmp_path / "c.jpg"))) as im:
+        assert im.mode == "RGB"
+    Image.new("RGB", (600, 900), (90, 92, 95)).save(png)
+    with Image.open(layout.cut_as_is(str(png), (0, 0, 600, 900), str(tmp_path / "g.jpg"))) as im:
+        assert im.mode == "L"
