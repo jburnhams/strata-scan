@@ -283,3 +283,112 @@ def test_a_picture_page_is_its_pictures_on_clean_paper(tmp_path):
     assert Image.open(out).mode == "RGB"
     assert Image.open(out).getpixel((150, 150))[1] < 80  # still red
     assert Image.open(out).getpixel((10, 10)) == (255, 255, 255)  # the paper made white
+
+
+def test_pictures_are_jpegs_in_grey_unless_coloured(tmp_path):
+    """An engraving on browned paper is a grey JPEG; a hand-coloured print stays in colour; a figure of the layout is given its own cut,
+    and a rule is left to page-build."""
+    from PIL import Image, ImageDraw
+
+    page = Image.new("RGB", (1000, 1400), (225, 205, 165))  # browned paper
+    d = ImageDraw.Draw(page)
+    for y in range(120, 480, 6):  # an engraving's hatching, in brown-black ink
+        d.line([(100, y), (500, y + 40)], fill=(60, 50, 40), width=2)
+    d.rectangle([550, 700, 900, 1100], fill=(190, 40, 40))  # a coloured plate's red
+    d.rectangle([600, 1150, 850, 1250], fill=(40, 70, 170))
+    png = tmp_path / "p.png"
+    page.save(png)
+    grey = layout.cut_picture(str(png), (80, 100, 450, 450), str(tmp_path / "e.jpg"))
+    with Image.open(grey) as im:
+        assert (im.format, im.mode) == ("JPEG", "L")
+        assert im.getpixel((5, 5)) > 240  # the paper white
+    coloured = layout.cut_picture(str(png), (520, 650, 420, 650), str(tmp_path / "c.jpg"))
+    with Image.open(coloured) as im:
+        assert (im.format, im.mode) == ("JPEG", "RGB")
+    groups = {
+        "blocks": [],
+        "figures": [{"box": [80, 70, 580, 400], "kind": "figure"}, {"box": [0, 500, 1000, 502], "kind": "rule"}],
+    }
+    got = layout.with_figure_pictures(groups, str(png), str(tmp_path / "crops"))
+    fig, rule = got["figures"]
+    assert fig["image"].endswith(".fig0.jpg")
+    assert "image" not in rule
+    assert layout.with_figure_pictures({"blocks": []}, str(png), str(tmp_path / "crops")) == {"blocks": []}
+
+
+def test_a_pictures_box_is_found_again_from_its_ink_clear_of_the_text(tmp_path):
+    """A layout's box that starts below the top of an engraving and runs on over the text under it is the engraving's own: its top found,
+    the text's lines left out."""
+    from PIL import Image, ImageDraw
+
+    page = Image.new("L", (1000, 1400), 225)
+    d = ImageDraw.Draw(page)
+    for x in range(200, 800, 7):  # an engraving, 200..800 x 300..700
+        d.line([(x, 300), (x + 20, 700)], fill=40, width=3)
+    lines = []
+    for y in range(760, 1000, 40):  # lines of text under it
+        d.rectangle([150, y, 850, y + 18], fill=60)
+        lines.append((150, y, 700, 18))
+    png = tmp_path / "p.png"
+    page.save(png)
+    x, y, w, h = layout.picture_box(
+        str(png), (190, 380, 640, 600), lines
+    )  # starts 80 below its top, ends over the text
+    assert abs(y - 300) < 15
+    assert abs(y + h - 700) < 15
+    assert abs(x - 200) < 15
+    assert abs(x + w - 820) < 20
+    assert layout.picture_box(str(png), (10, 1200, 50, 50), lines) == (10, 1200, 50, 50)  # no ink there: kept as boxed
+
+
+def test_the_reads_pictures_fill_in_what_the_layout_missed_or_misboxed():
+    """A layout figure out of the page's thousandths is dropped; a picture the read found that no layout figure covers is added; one the
+    layout covers is not added twice; rules stay."""
+    laid = [
+        {"box": [170, 1000, 815, 1630], "kind": "engraving"},  # y in the wrong units
+        {"box": [100, 100, 400, 300], "kind": "figure"},
+        {"box": [0, 500, 1000, 502], "kind": "rule"},
+    ]
+    read = [
+        {"box": [160, 460, 860, 800], "kind": "figure"},  # the engraving, which the layout misboxed
+        {"box": [110, 110, 390, 290], "kind": "figure"},  # covered already
+    ]
+    got = layout.merged_figures(laid, read)
+    assert [f["box"] for f in got] == [[100, 100, 400, 300], [0, 500, 1000, 502], [160, 460, 860, 800]]
+
+
+def test_one_picture_boxed_twice_is_drawn_once(tmp_path):
+    """The layout's box (too low) and the read's (right) for one engraving, both put right from the ink: one picture, not two."""
+    from PIL import Image, ImageDraw
+
+    page = Image.new("L", (1000, 1400), 225)
+    d = ImageDraw.Draw(page)
+    for x in range(200, 800, 7):
+        d.line([(x, 300), (x + 20, 700)], fill=40, width=3)
+    png = tmp_path / "p.png"
+    page.save(png)
+    groups = {
+        "blocks": [],
+        "figures": [
+            {"box": [190, 300, 830, 520], "kind": "engraving"},
+            {"box": [195, 210, 825, 505], "kind": "figure"},
+        ],
+    }
+    got = layout.with_figure_pictures(groups, str(png), str(tmp_path / "crops"))
+    assert len(got["figures"]) == 1
+
+
+def test_a_red_cloth_cover_kept_as_it_is_stays_red(tmp_path):
+    """A cover cut as it is: most of it one colour (red cloth) with black lettering. Whitened, its red would be taken for the paper (review);
+    looked at as it is, it is colour. A grey cover stays grey."""
+    from PIL import Image, ImageDraw
+
+    cover = Image.new("RGB", (600, 900), (170, 30, 30))
+    ImageDraw.Draw(cover).rectangle([100, 100, 500, 200], fill=(10, 10, 10))
+    png = tmp_path / "c.png"
+    cover.save(png)
+    with Image.open(layout.cut_as_is(str(png), (0, 0, 600, 900), str(tmp_path / "c.jpg"))) as im:
+        assert im.mode == "RGB"
+    Image.new("RGB", (600, 900), (90, 92, 95)).save(png)
+    with Image.open(layout.cut_as_is(str(png), (0, 0, 600, 900), str(tmp_path / "g.jpg"))) as im:
+        assert im.mode == "L"

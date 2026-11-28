@@ -120,12 +120,16 @@ def lift(png: str, hue: float | None) -> Marks:
 
 
 def save(marks: Marks, out: str) -> str:
-    """The part of the page round its marks (`Marks.box`) written to `out`; its path."""
+    """The part of the page round its marks (`Marks.box`) written to `out`, a JPEG, in grey unless they are coloured (a red stamp); its
+    path."""
+    from PIL import Image
+
+    from stratascan import layout
+
     if marks.box is None:
         raise ValueError("no marks to save")
     x, y, w, h = marks.box
-    cv.imwrite(out, cv.cvtColor(marks.image[y : y + h, x : x + w], cv.COLOR_RGB2BGR))
-    return out
+    return layout.save_picture(Image.fromarray(npa.ascontiguousarray(marks.image[y : y + h, x : x + w]), "RGB"), out)
 
 
 def clusters(boxes: dict[int, list[int]], near: float) -> list[tuple[list[int], tuple[int, int, int, int]]]:

@@ -28,9 +28,10 @@ default they are the client."""
 
 import json
 import logging
+import math
 import os
 import threading
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -43,7 +44,22 @@ import numpy as np
 from sqlalchemy import delete, func, select, update
 from strata_python.clients import models as sm
 
-from stratascan import ahead, export, figures, files, gate, geometry, layout, marks, rows, settings, sources, store
+from stratascan import (
+    ahead,
+    export,
+    figures,
+    files,
+    gate,
+    geometry,
+    kept,
+    layout,
+    marks,
+    qc,
+    rows,
+    settings,
+    sources,
+    store,
+)
 from stratascan.db.models import Book, Figure, Page, Scan
 
 log = logging.getLogger("stratascan")
@@ -113,6 +129,10 @@ def plausible(before: str, after: str) -> bool:
 
 
 READER = "doctr-haiku-fix"  # the last route's reader: docTR's word boxes, Claude Haiku's text (strata-models, eval ocr-lines)
+READABLE = 60  # OCR confidence (0-100) over which a page is text, never a picture or a pattern; a marbled endpaper's letters were 40
+SHORTLIST = (
+    5  # faces in a book's shortlist: the most named by its sample's answers (thirteen made each word a face of its own)
+)
 SAMPLE = 6  # text pages of a book, spread through it, whose font shortlists together are the book's (book_faces)
 
 
@@ -651,11 +671,17 @@ class Runner:
         todo, unread = self.unread_layouts(todo)
         self.sample_faces(book_id)
         deferred: list[Page] = []
-        with self.queued_ahead(self.rebuild_calls(todo), batch=True) as bulk:
-            errors = self._each(book_id, todo, partial(self.rebuild_one, deferred=deferred), at_once=1)
-            if deferred:
-                again = self.relayout(deferred, bulk)
-                errors += self._each(book_id, again, self.rebuild_again, at_once=1)
+        with self.queued_ahead(kept.unasked(book_id, self.rebuild_calls(todo)), batch=True) as bulk:
+            # answers kept from earlier settings are given again, not asked again (kept.py); only what is new is queued, and kept
+            inner = self.run_model
+            self.run_model = kept.wrap(book_id, inner) if inner is not None else None
+            try:
+                errors = self._each(book_id, todo, partial(self.rebuild_one, deferred=deferred), at_once=1)
+                if deferred:
+                    again = self.relayout(deferred, bulk)
+                    errors += self._each(book_id, again, self.rebuild_again, at_once=1)
+            finally:
+                self.run_model = inner
         if unread:
             errors.insert(
                 0,
@@ -674,8 +700,10 @@ class Runner:
         png = files.page_png(page.book_id, page.id)
         if typeset(page) and not os.path.isfile(png):
             render(page)
-        if not typeset(page) or marks.dark(png) or marks.lift(png, None).share > marks.PATTERN:
-            # a "text" page that is the book photographed, or marbled paper the OCR read letters in ("AAA", "ARAA"): no type to set
+        unsure = page.ocr_conf is None or page.ocr_conf < READABLE
+        if not typeset(page) or (unsure and (marks.dark(png) or marks.lift(png, None).share > marks.PATTERN)):
+            # a "text" page that is the book photographed, or marbled paper the OCR read letters in ("AAA", "ARAA", at 40 % sure): no type
+            # to set. A page read surely is text, whatever its paper (the third book's orange flap, read at 95 %, was taken for a pattern)
             self.rebuild_picture(page)
             return
         out = files.rebuilt_pdf(page.book_id, page.id)
@@ -768,7 +796,7 @@ class Runner:
             if lifted.share > marks.PATTERN:
                 made["whole"] = True  # a pattern: the leaf as its page crop has it, one side of a spread (review)
             elif lifted.box is not None:
-                cut = marks.save(lifted, os.path.join(crops, f"{page.id}.marks.png"))
+                cut = marks.save(lifted, os.path.join(crops, f"{page.id}.marks.jpg"))
                 boxes, made["marks"] = [lifted.box], cut
         if made.get("whole"):
             book = self.book_in(page, os.path.join(crops, f"{page.id}.book.png")) if made.get("book") else None
@@ -793,9 +821,16 @@ class Runner:
         except layout.LayoutError as e:
             files.remove(out)
             raise StageError(str(e)) from e
+        reasons: list[str] = []
+        if typeset(page) and page.ocr_conf is not None and page.ocr_conf >= READABLE:
+            reasons.append(f"its {len((page.text or '').split())} words, read surely, were kept as a picture")
+        try:
+            reasons += qc.oversized(out, qc.drawn(out, wide))
+        except Exception as e:
+            reasons.append(f"the made page could not be checked ({type(e).__name__}: {e})")
         verdict: dict[str, Any] = {
-            "passed": True,
-            "reasons": [],
+            "passed": not reasons,
+            "reasons": reasons,
             "picture": bool(boxes),
             "whole": bool(made.get("whole")),
             "marks": "marks" in made,
@@ -867,9 +902,19 @@ class Runner:
         was: dict[str, Any] | None = None,
         faces: list[str] | None = None,
     ) -> list[str]:
+        """The page set from `ocr`, by any route (its first layout, its rows, another reader): each with the book's font shortlist (`faces`, or
+        `book_faces`: the rows and reader routes once asked a proposer of their own, and the third book's page 22 came out in eight display
+        faces) and with the pictures the read found that its layout missed (`layout.merged_figures`)."""
         if self.run_model is None:
             raise layout.LayoutError("strata-models is not set up")
         typed = (page.text or "") if page.text_edited else None
+        lay = cast("dict[str, Any]", ocr.get("layout") or {})
+        groups = cast("dict[str, Any]", lay.get("groups") or {})
+        if groups:
+            shape = read_image(png).shape
+            pictures = layout.merged_figures(groups.get("figures") or [], self.figures_in_thousandths(page, shape))
+            ocr = dict(ocr, layout=dict(lay, groups=dict(groups, figures=pictures)))
+        faces = faces if faces is not None else self.book_faces(page.book_id)
         return layout.rebuild_page(png, ocr, out, dpi, typed, self.run_model, page.text, was, faces)
 
     def book_faces(self, book_id: int) -> list[str] | None:
@@ -879,16 +924,45 @@ class Runner:
             with open(files.path(book_id, "faces.json"), encoding="utf-8") as f:
                 got = cast("dict[str, Any]", json.load(f))
         except (OSError, ValueError):
-            return None
+            return self.faces_told(book_id)
         answers = [str(a) for a in cast("list[Any]", got.get("answers") or []) if str(a).strip()]
+        votes: Counter[str] = Counter()
+        for a in answers:
+            try:
+                named: Any = cast("dict[str, Any]", json.loads(a[a.find("{") : a.rfind("}") + 1])).get("faces") or []
+            except ValueError:
+                continue
+            votes.update(str(f) for f in cast("list[Any]", named)[:SHORTLIST])
+        if votes:
+            # the faces most of its pages were said to be in: all the answers together named thirteen, and font-match fitting every word
+            # to the best of thirteen set a line's words in three faces (the third book's page 11, some looking bold)
+            return [f for f, _ in votes.most_common(SHORTLIST)]
         return answers or None
+
+    def faces_told(self, book_id: int) -> list[str] | None:
+        """A book set before its shortlist was asked for a sample (faces.json): the faces most proposed for its pages then (`ocr["type"]`),
+        once SAMPLE of them had one, so what was asked then is not asked again (Jonathan, 2026-11-28: reuse all model work)."""
+        with store.session() as s:
+            q = select(Page.ocr).where(Page.book_id == book_id, Page.kind == "text", Page.ocr.is_not(None))
+            told = [
+                [str(f) for f in cast("list[Any]", t["faces"])][:SHORTLIST]
+                for t in (cast("dict[str, Any]", (o or {}).get("type") or {}) for o in s.scalars(q))
+                if t.get("asked") and t.get("faces")
+            ]
+        if len(told) < SAMPLE:
+            return None
+        return [f for f, _ in Counter(f for faces in told for f in faces).most_common(SHORTLIST)]
 
     def sample_faces(self, book_id: int) -> None:
         """The book's font shortlist, once: the proposer asked, in one bulk call, about SAMPLE of its text pages spread through it (body type,
         and the display type of a title or an advert among them), its answers kept in the book's faces.json (`book_faces`). A book's faces
         are few, so asking for each page paid for the same answer (Jonathan, 2026-11-26), and a page asking its own was a call on its own."""
-        if self.run_model is not layout.models_run or self.book_faces(book_id) is not None:
-            return
+        if (
+            self.run_model is not layout.models_run
+            or os.path.isfile(files.path(book_id, "faces.json"))
+            or self.book_faces(book_id) is not None
+        ):
+            return  # asked once a book, whatever came back: what it paid for is not paid for again
         with store.session() as s:
             q = select(Page).where(Page.book_id == book_id, Page.kind == "text").order_by(Page.position)
             texts = [p for p in s.scalars(q) if typeset(p) and os.path.isfile(files.page_png(book_id, p.id))]
@@ -909,8 +983,8 @@ class Runner:
             log.warning("book %s: no font shortlist: %s", book_id, e)
             return
         answers = [str(r.get("text") or "") for r in got if not isinstance(r, Exception)]
-        if not any(a.strip() for a in answers):
-            return
+        if len(answers) < len(got):
+            return  # a call failed: asked again next time
         with open(files.path(book_id, "faces.json"), "w", encoding="utf-8") as f:
             json.dump({"model": layout.PROPOSE_MODEL, "pages": [p.id for p in sample], "answers": answers}, f)
 
@@ -1002,13 +1076,10 @@ class Runner:
                 planned.append((p, layout.numbered(p.ocr or {}, run)))
             except layout.LayoutError as e:
                 log.warning("page %s: not laid out again: %s", p.id, e)
-        bulk.send(
-            [
-                ("vision-language", layout.layout_params(files.page_png(p.book_id, p.id), c), fallback)
-                for p, c in planned
-            ],
-            batch=True,
-        )
+        asked: list[ahead.Call] = [
+            ("vision-language", layout.layout_params(files.page_png(p.book_id, p.id), c), fallback) for p, c in planned
+        ]
+        bulk.send(kept.unasked(pages[0].book_id, asked) if pages else asked, batch=True)
         again: list[Page] = []
         for p, _ in planned:
             png = files.page_png(p.book_id, p.id)
@@ -1042,7 +1113,14 @@ class Runner:
 
     def judge(self, page: Page, ocr: dict[str, Any], png: str, out: str, dpi: int, again: str | None) -> gate.Verdict:
         blocks = cast("list[dict[str, Any]]", cast("dict[str, Any]", ocr.get("layout") or {}).get("blocks") or [])
-        return gate.check_page(out, png, page.text or "", blocks, dpi, again)
+        return gate.check_page(out, png, page.text or "", blocks, dpi, again, self.read_pictures(page))
+
+    def read_pictures(self, page: Page) -> list[tuple[float, float, float, float]]:
+        """The pictures the read found on the page (or a person drew), [x0, y0, x1, y1] in its pixels: what the rebuilt page must draw."""
+        with store.session() as s:
+            return [
+                (f.x, f.y, f.x + f.w, f.y + f.h) for f in s.scalars(select(Figure).where(Figure.page_id == page.id))
+            ]
 
     def set_from_rows(
         self,
@@ -1188,10 +1266,19 @@ def clean_text(ocr: dict[str, Any], sure_words: int, kind: str = "text") -> str:
     return "\n".join(str(lines[i]["text"]) for i in kept_lines(ocr, sure_words, kind))
 
 
+A4 = (8.27, 11.69)  # inches: the largest a book's page is taken to be (Jonathan, 2026-11-28)
+
+
 def scan_dpi(page: Page) -> int:
+    """The scan's resolution, raised so that the scan is at most A4: an Internet Archive PDF can give its pages as their pixels at 72 dpi,
+    which made the third book's pages 32 by 45 inches (and every picture on them too large to shrink)."""
     with store.session() as s:
         scan = s.get(Scan, page.scan_id)
-    return scan.dpi if scan and scan.dpi else 300
+    dpi = (scan.dpi if scan is not None else None) or 300
+    if page.crop_w and page.crop_h:  # the page, not its scan: a spread is two pages wide
+        short, long = sorted((page.crop_w, page.crop_h))
+        dpi = max(dpi, math.ceil(short / A4[0]), math.ceil(long / A4[1]))
+    return dpi
 
 
 def renumber(book_id: int) -> None:
