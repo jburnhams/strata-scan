@@ -710,10 +710,6 @@ class Runner:
         plain = cast("dict[str, Any]", ocr.get("layout") or {}).get("model") == layout.PLAIN
         faces = self.book_faces(page.book_id)
         try:
-            lay = cast("dict[str, Any]", ocr.get("layout") or {})
-            groups = cast("dict[str, Any]", lay.get("groups") or {})
-            pictures = layout.merged_figures(groups.get("figures") or [], self.figures_in_thousandths(page, gray.shape))
-            ocr = dict(ocr, layout=dict(lay, groups=dict(groups, figures=pictures)))
             used = self.set_in_type(page, ocr, png, out, dpi, was, faces)
         except layout.LayoutError as e:
             files.remove(out)
@@ -885,9 +881,19 @@ class Runner:
         was: dict[str, Any] | None = None,
         faces: list[str] | None = None,
     ) -> list[str]:
+        """The page set from `ocr`, by any route (its first layout, its rows, another reader): each with the book's font shortlist (`faces`, or
+        `book_faces`: the rows and reader routes once asked a proposer of their own, and the third book's page 22 came out in eight display
+        faces) and with the pictures the read found that its layout missed (`layout.merged_figures`)."""
         if self.run_model is None:
             raise layout.LayoutError("strata-models is not set up")
         typed = (page.text or "") if page.text_edited else None
+        lay = cast("dict[str, Any]", ocr.get("layout") or {})
+        groups = cast("dict[str, Any]", lay.get("groups") or {})
+        if groups:
+            shape = read_image(png).shape
+            pictures = layout.merged_figures(groups.get("figures") or [], self.figures_in_thousandths(page, shape))
+            ocr = dict(ocr, layout=dict(lay, groups=dict(groups, figures=pictures)))
+        faces = faces if faces is not None else self.book_faces(page.book_id)
         return layout.rebuild_page(png, ocr, out, dpi, typed, self.run_model, page.text, was, faces)
 
     def book_faces(self, book_id: int) -> list[str] | None:
