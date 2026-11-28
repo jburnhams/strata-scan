@@ -32,6 +32,15 @@ def test_a_page_against_itself_agrees_fully():
     assert m.ink_scan == pytest.approx(m.ink_finished, rel=0.15)
 
 
+def test_a_picture_kept_whole_agrees_with_itself_however_dark():
+    # a photograph or pattern kept as it is: broad dark areas are ground on both sides, not ink on one
+    grey = np.full((H, W), 80, np.uint8)
+    grey[100:110, 40:360] = 10
+    m = compare.measure(grey, grey.copy(), 150)
+    assert m.ink == pytest.approx(1.0, abs=0.02)
+    assert m.ink_scan == pytest.approx(m.ink_finished)
+
+
 def test_lines_set_a_pixel_off_still_agree_but_lines_set_elsewhere_do_not():
     assert compare.measure(lines(), lines(shift=1), 150).ink > 0.9
     assert compare.measure(lines(), lines(shift=20), 150).ink < 0.2

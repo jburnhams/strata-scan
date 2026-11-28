@@ -40,7 +40,7 @@ INK = 0.5
 LOST = 0.1
 SHAPE = 0.03
 SIDE = 1000  # long side the measures are taken at: a line of type is still several pixels tall, and a page takes a few hundredths of a second
-VERSION = 1  # bumped when a measure changes, so a kept result is worked out again
+VERSION = 2  # bumped when a measure changes, so a kept result is worked out again
 
 Gray = NDArray[np.uint8]
 
@@ -108,7 +108,9 @@ def measure(scan: Gray, finished: Gray, dpi: float) -> Match:
     h, w = scan.shape
     shape = abs(finished.shape[1] / finished.shape[0] - w / h) / (w / h)
     want = gate.ink_of(scan, dpi)
-    got = np.asarray(cv2.resize(finished, (w, h), interpolation=cv2.INTER_AREA) < 128, dtype=np.bool_)
+    # the same ink finder on both sides: a photograph or a pattern kept whole is the scan itself, and a bare threshold would call its
+    # dark areas ink where ink_of calls them ground (Codex on PR 26); on a clean page of type the two agree
+    got = gate.ink_of(np.asarray(cv2.resize(finished, (w, h), interpolation=cv2.INTER_AREA), dtype=np.uint8), dpi)
     everywhere = np.ones((h, w), dtype=np.bool_)
     ink = gate.ink_f1(want, got, max(2, round(dpi / 100)), everywhere)
     return Match(ink=ink, ink_scan=float(want.mean()), ink_finished=float(got.mean()), shape=shape)
