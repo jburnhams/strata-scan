@@ -17,7 +17,7 @@ import os
 import re
 import tempfile
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from difflib import SequenceMatcher
 from typing import Any, cast
 
@@ -318,9 +318,55 @@ def cut_as_is(png: str, box: tuple[int, int, int, int], out: str) -> str:
         return save_picture(im.convert("RGB").crop((x, y, x + w, y + h)), out)
 
 
-def with_figure_pictures(groups: Mapping[str, Any], png: str, folder: str) -> dict[str, Any]:
+def picture_box(
+    png: str, box: tuple[int, int, int, int], text: Sequence[tuple[int, int, int, int]]
+) -> tuple[int, int, int, int]:
+    """(x, y, w, h) of the picture a layout boxed at `box` (page pixels), from the ink itself: the ink near the box that is not the page's
+    text (`text`: its lines' boxes), joined into the shapes it makes, those that reach into the box together. A layout model's box is a
+    guess: the third book's page 15 lost the top of its engraving, and its box ran on over the caption and the text below, drawn twice."""
+    import cv2
+    import numpy as np
+
+    npa: Any = np
+    cv: Any = cv2
+    g = cv.imread(png, cv.IMREAD_GRAYSCALE)
+    if g is None:
+        return box
+    high, wide = g.shape
+    g = npa.clip(g.astype(np.float32) * (255.0 / max(float(npa.percentile(g[::4, ::4], 90)), 1.0)), 0, 255)
+    ink = (g < 0.7 * 255).astype(np.uint8)
+    pad = max(2, round(0.004 * high))
+    for x, y, w, h in text:
+        ink[max(0, y - pad) : y + h + pad, max(0, x - pad) : x + w + pad] = 0
+    k = (
+        max(3, round(0.012 * min(wide, high))) | 1
+    )  # an engraving's strokes joined into one shape, not its lines to the text's
+    ink = cv.morphologyEx(ink, cv.MORPH_CLOSE, np.ones((k, k), np.uint8))
+    x, y, w, h = box
+    mx, my = round(0.15 * wide), round(0.15 * high)  # how far the picture may reach past the box it was given
+    x0, y0, x1, y1 = max(0, x - mx), max(0, y - my), min(wide, x + w + mx), min(high, y + h + my)
+    n, _, st, _ = cv.connectedComponentsWithStats(ink[y0:y1, x0:x1], connectivity=8)
+    keep: list[tuple[int, int, int, int]] = []
+    for i in range(1, n):
+        cx, cy, cw, ch, area = (int(v) for v in st[i])
+        if area < 0.001 * wide * high:
+            continue  # a speck, a stray letter
+        ax, ay = x0 + cx, y0 + cy
+        if ax < x + w and ax + cw > x and ay < y + h and ay + ch > y:  # it reaches into the box
+            keep.append((ax, ay, ax + cw, ay + ch))
+    if not keep:
+        return box
+    bx0, by0 = min(b[0] for b in keep), min(b[1] for b in keep)
+    bx1, by1 = max(b[2] for b in keep), max(b[3] for b in keep)
+    if (bx1 - bx0) * (by1 - by0) < 0.25 * w * h:
+        return box  # ink found is a sliver of the box: a pale picture, kept as boxed
+    return bx0, by0, bx1 - bx0, by1 - by0
+
+
+def with_figure_pictures(groups: Mapping[str, Any], png: str, folder: str, context: str = "") -> dict[str, Any]:
     """The layout's groups with each picture (not a rule) given its own cut (`cut_picture`, a JPEG in `folder`), which page-build draws as
-    given: its own crops were lossless grey, so a hand-coloured plate lost its colour and a page with a plate weighed megabytes."""
+    given: its own crops were lossless grey, so a hand-coloured plate lost its colour and a page with a plate weighed megabytes. Its box is
+    found again from the ink (`picture_box`), clear of the page's text: the lines of the layout's blocks, from `context` (`numbered`)."""
     from PIL import Image
 
     figs = cast("list[dict[str, Any]]", groups.get("figures") or [])
@@ -329,6 +375,18 @@ def with_figure_pictures(groups: Mapping[str, Any], png: str, folder: str) -> di
     with Image.open(png) as im:
         wide, high = im.size
     os.makedirs(folder, exist_ok=True)
+    blocks = cast("list[dict[str, list[Any]]]", groups.get("blocks") or [])
+    set_lines = {int(n) for b in blocks for n in b.get("lines") or []}
+    text = [
+        (
+            round(b[0] * wide / 1000),
+            round(b[1] * high / 1000),
+            round((b[2] - b[0]) * wide / 1000),
+            round((b[3] - b[1]) * high / 1000),
+        )
+        for n, b, _t in numbered_lines(context)
+        if n in set_lines
+    ]
     out: list[dict[str, Any]] = []
     for k, f in enumerate(figs):
         box = cast("list[float]", f.get("box") or [])
@@ -342,8 +400,10 @@ def with_figure_pictures(groups: Mapping[str, Any], png: str, folder: str) -> di
         if x1 - x0 < 2 or y1 - y0 < 2:
             out.append(f)
             continue
+        px, py, pw, ph = picture_box(png, (x0, y0, x1 - x0, y1 - y0), text)
         name = f"{os.path.splitext(os.path.basename(png))[0]}.fig{k}.jpg"
-        out.append(dict(f, image=cut_picture(png, (x0, y0, x1 - x0, y1 - y0), os.path.join(folder, name))))
+        found = [1000 * px / wide, 1000 * py / high, 1000 * (px + pw) / wide, 1000 * (py + ph) / high]
+        out.append(dict(f, box=found, image=cut_picture(png, (px, py, pw, ph), os.path.join(folder, name))))
     return dict(groups, figures=out)
 
 
@@ -433,7 +493,7 @@ def rebuild_page(
         "page-build",
         {
             "ocr": base,
-            "groups": with_figure_pictures(groups, png, crops),
+            "groups": with_figure_pictures(groups, png, crops, context),
             "texts": texts,
             "font_fit": dict(fit),
             "image": png,

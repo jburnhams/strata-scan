@@ -314,3 +314,28 @@ def test_pictures_are_jpegs_in_grey_unless_coloured(tmp_path):
     assert fig["image"].endswith(".fig0.jpg")
     assert "image" not in rule
     assert layout.with_figure_pictures({"blocks": []}, str(png), str(tmp_path / "crops")) == {"blocks": []}
+
+
+def test_a_pictures_box_is_found_again_from_its_ink_clear_of_the_text(tmp_path):
+    """A layout's box that starts below the top of an engraving and runs on over the text under it is the engraving's own: its top found,
+    the text's lines left out."""
+    from PIL import Image, ImageDraw
+
+    page = Image.new("L", (1000, 1400), 225)
+    d = ImageDraw.Draw(page)
+    for x in range(200, 800, 7):  # an engraving, 200..800 x 300..700
+        d.line([(x, 300), (x + 20, 700)], fill=40, width=3)
+    lines = []
+    for y in range(760, 1000, 40):  # lines of text under it
+        d.rectangle([150, y, 850, y + 18], fill=60)
+        lines.append((150, y, 700, 18))
+    png = tmp_path / "p.png"
+    page.save(png)
+    x, y, w, h = layout.picture_box(
+        str(png), (190, 380, 640, 600), lines
+    )  # starts 80 below its top, ends over the text
+    assert abs(y - 300) < 15
+    assert abs(y + h - 700) < 15
+    assert abs(x - 200) < 15
+    assert abs(x + w - 820) < 20
+    assert layout.picture_box(str(png), (10, 1200, 50, 50), lines) == (10, 1200, 50, 50)  # no ink there: kept as boxed
