@@ -44,7 +44,22 @@ import numpy as np
 from sqlalchemy import delete, func, select, update
 from strata_python.clients import models as sm
 
-from stratascan import ahead, export, figures, files, gate, geometry, layout, marks, qc, rows, settings, sources, store
+from stratascan import (
+    ahead,
+    export,
+    figures,
+    files,
+    gate,
+    geometry,
+    kept,
+    layout,
+    marks,
+    qc,
+    rows,
+    settings,
+    sources,
+    store,
+)
 from stratascan.db.models import Book, Figure, Page, Scan
 
 log = logging.getLogger("stratascan")
@@ -656,11 +671,17 @@ class Runner:
         todo, unread = self.unread_layouts(todo)
         self.sample_faces(book_id)
         deferred: list[Page] = []
-        with self.queued_ahead(self.rebuild_calls(todo), batch=True) as bulk:
-            errors = self._each(book_id, todo, partial(self.rebuild_one, deferred=deferred), at_once=1)
-            if deferred:
-                again = self.relayout(deferred, bulk)
-                errors += self._each(book_id, again, self.rebuild_again, at_once=1)
+        with self.queued_ahead(kept.unasked(book_id, self.rebuild_calls(todo)), batch=True) as bulk:
+            # answers kept from earlier settings are given again, not asked again (kept.py); only what is new is queued, and kept
+            inner = self.run_model
+            self.run_model = kept.wrap(book_id, inner) if inner is not None else None
+            try:
+                errors = self._each(book_id, todo, partial(self.rebuild_one, deferred=deferred), at_once=1)
+                if deferred:
+                    again = self.relayout(deferred, bulk)
+                    errors += self._each(book_id, again, self.rebuild_again, at_once=1)
+            finally:
+                self.run_model = inner
         if unread:
             errors.insert(
                 0,
@@ -903,7 +924,7 @@ class Runner:
             with open(files.path(book_id, "faces.json"), encoding="utf-8") as f:
                 got = cast("dict[str, Any]", json.load(f))
         except (OSError, ValueError):
-            return None
+            return self.faces_told(book_id)
         answers = [str(a) for a in cast("list[Any]", got.get("answers") or []) if str(a).strip()]
         votes: Counter[str] = Counter()
         for a in answers:
@@ -918,12 +939,30 @@ class Runner:
             return [f for f, _ in votes.most_common(SHORTLIST)]
         return answers or None
 
+    def faces_told(self, book_id: int) -> list[str] | None:
+        """A book set before its shortlist was asked for a sample (faces.json): the faces most proposed for its pages then (`ocr["type"]`),
+        once SAMPLE of them had one, so what was asked then is not asked again (Jonathan, 2026-11-28: reuse all model work)."""
+        with store.session() as s:
+            q = select(Page.ocr).where(Page.book_id == book_id, Page.kind == "text", Page.ocr.is_not(None))
+            told = [
+                [str(f) for f in cast("list[Any]", t["faces"])][:SHORTLIST]
+                for t in (cast("dict[str, Any]", (o or {}).get("type") or {}) for o in s.scalars(q))
+                if t.get("asked") and t.get("faces")
+            ]
+        if len(told) < SAMPLE:
+            return None
+        return [f for f, _ in Counter(f for faces in told for f in faces).most_common(SHORTLIST)]
+
     def sample_faces(self, book_id: int) -> None:
         """The book's font shortlist, once: the proposer asked, in one bulk call, about SAMPLE of its text pages spread through it (body type,
         and the display type of a title or an advert among them), its answers kept in the book's faces.json (`book_faces`). A book's faces
         are few, so asking for each page paid for the same answer (Jonathan, 2026-11-26), and a page asking its own was a call on its own."""
-        if self.run_model is not layout.models_run or self.book_faces(book_id) is not None:
-            return
+        if (
+            self.run_model is not layout.models_run
+            or os.path.isfile(files.path(book_id, "faces.json"))
+            or self.book_faces(book_id) is not None
+        ):
+            return  # asked once a book, whatever came back: what it paid for is not paid for again
         with store.session() as s:
             q = select(Page).where(Page.book_id == book_id, Page.kind == "text").order_by(Page.position)
             texts = [p for p in s.scalars(q) if typeset(p) and os.path.isfile(files.page_png(book_id, p.id))]
@@ -944,8 +983,8 @@ class Runner:
             log.warning("book %s: no font shortlist: %s", book_id, e)
             return
         answers = [str(r.get("text") or "") for r in got if not isinstance(r, Exception)]
-        if not any(a.strip() for a in answers):
-            return
+        if len(answers) < len(got):
+            return  # a call failed: asked again next time
         with open(files.path(book_id, "faces.json"), "w", encoding="utf-8") as f:
             json.dump({"model": layout.PROPOSE_MODEL, "pages": [p.id for p in sample], "answers": answers}, f)
 
@@ -1037,13 +1076,10 @@ class Runner:
                 planned.append((p, layout.numbered(p.ocr or {}, run)))
             except layout.LayoutError as e:
                 log.warning("page %s: not laid out again: %s", p.id, e)
-        bulk.send(
-            [
-                ("vision-language", layout.layout_params(files.page_png(p.book_id, p.id), c), fallback)
-                for p, c in planned
-            ],
-            batch=True,
-        )
+        asked: list[ahead.Call] = [
+            ("vision-language", layout.layout_params(files.page_png(p.book_id, p.id), c), fallback) for p, c in planned
+        ]
+        bulk.send(kept.unasked(pages[0].book_id, asked) if pages else asked, batch=True)
         again: list[Page] = []
         for p, _ in planned:
             png = files.page_png(p.book_id, p.id)

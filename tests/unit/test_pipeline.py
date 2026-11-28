@@ -394,6 +394,9 @@ def test_the_finished_pdf_sets_every_page_and_one_that_fails_is_flagged(make_boo
         pipeline.Task(b, ("rebuild",))
     )  # again: only the page that failed is set again, none made as it would be made now
     assert order == [worst.id]
+    asked = [j for j in fake_models.jobs if j["role"] == "vision-language"]
+    # its line fix and readings: kept from the first time (the stand-in cannot answer the font proposer, so that failed and is asked again)
+    assert {j["params"].get("system_preset") for j in asked} <= {layout.PROPOSE_PRESET}
     drawn = [j["params"]["out"] for j in fake_models.jobs if j["role"] == "page-build" and "out" in j["params"]]
     assert {int(os.path.basename(o).split(".")[0]) for o in drawn} == {
         worst.id
@@ -806,3 +809,31 @@ def test_a_books_shortlist_is_the_faces_its_sample_named_most(make_book, runner)
     assert got is not None
     assert got[:2] == ["libre-caslon-text", "crimson-text"]
     assert len(got) == pipeline.SHORTLIST
+
+
+def test_a_book_set_before_its_sample_reuses_the_faces_its_pages_were_given(make_book, runner):
+    """No faces.json (the book was set before a sample was asked for): the faces its pages were proposed then, voted, are its shortlist,
+    and no proposer is asked again."""
+    b = make_book()
+    runner.run(pipeline.Task(b, ("import", "detect")))
+    pages = pages_of(b)
+    with store.session() as s:
+        for k, p in enumerate(pages):
+            row = s.get(Page, p.id)
+            row.kind = "text"
+            row.ocr = {"type": {"asked": True, "faces": ["caslon", "bodoni" if k % 2 else "baskerville", "cardo"]}}
+    assert runner.book_faces(b) is None  # fewer than SAMPLE told
+    for extra in range(pipeline.SAMPLE):
+        with store.session() as s:
+            s.add(
+                Page(
+                    book_id=b,
+                    scan_id=pages[0].scan_id,
+                    position=100 + extra,
+                    kind="text",
+                    ocr={"type": {"asked": True, "faces": ["caslon"]}},
+                )
+            )
+    got = runner.book_faces(b)
+    assert got is not None
+    assert got[0] == "caslon"
