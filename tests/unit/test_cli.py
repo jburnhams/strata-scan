@@ -54,7 +54,9 @@ def test_add_books_run_and_export(capsys, tmp_path, models_service):
     assert "#1" in capsys.readouterr().out
     with pytest.raises(SystemExit, match="no book 99"):
         cli.main(["run", "99", "read"])
-    assert {j["params"]["dpi"] for j in models_service.submitted if j["role"] == "ocr"} == {150}
+    dpis = {j["params"]["dpi"] for j in models_service.submitted if j["role"] == "ocr"}
+    assert 150 in dpis  # the scans' own; a page cut larger than A4 at it is read at what makes it A4 (scan_dpi)
+    assert all(150 <= d < 200 for d in dpis)
     fixes = [j for j in models_service.submitted if j["params"].get("system_preset") == "ocr-correct-v2"]
     assert fixes
     assert {j["bulk"] for j in fixes} == {len(fixes)}  # every page's correction queued in one bulk call, after the OCR

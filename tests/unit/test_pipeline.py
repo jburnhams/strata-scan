@@ -1,6 +1,7 @@
 """The stages on a 4-scan book made in the test, with the real Tesseract standing in for strata-models (the `runner` fixture): what a
 person gets (pages, text, pictures, kinds, labels, files) and that their hand work survives a second run."""
 
+import json
 import os
 import shutil
 import zipfile
@@ -393,6 +394,9 @@ def test_the_finished_pdf_sets_every_page_and_one_that_fails_is_flagged(make_boo
         pipeline.Task(b, ("rebuild",))
     )  # again: only the page that failed is set again, none made as it would be made now
     assert order == [worst.id]
+    asked = [j for j in fake_models.jobs if j["role"] == "vision-language"]
+    # its line fix and readings: kept from the first time (the stand-in cannot answer the font proposer, so that failed and is asked again)
+    assert {j["params"].get("system_preset") for j in asked} <= {layout.PROPOSE_PRESET}
     drawn = [j["params"]["out"] for j in fake_models.jobs if j["role"] == "page-build" and "out" in j["params"]]
     assert {int(os.path.basename(o).split(".")[0]) for o in drawn} == {
         worst.id
@@ -669,7 +673,7 @@ def test_a_leaf_keeps_its_writing_on_white_and_a_cover_is_cut_to_the_book(make_b
         if j["role"] == "page-build" and "out" in j["params"]
     }
     (mark,) = drawn[leaf.id]["groups"]["figures"]
-    assert mark["image"].endswith(f"{leaf.id}.marks.png")
+    assert mark["image"].endswith(f"{leaf.id}.marks.jpg")
     assert not drawn[leaf.id]["rules"]
     assert mark["box"][0] < 300  # where the name is on the leaf, in thousandths
     assert mark["box"][1] < 300
@@ -687,10 +691,20 @@ def test_a_leaf_keeps_its_writing_on_white_and_a_cover_is_cut_to_the_book(make_b
         line = {"text": "AAA ARAA", "box": [100, 100, 300, 40], "words": []}
         s.get(Page, leaf.id).ocr = dict(s.get(Page, leaf.id).ocr or {}, lines=[line])
         s.get(Page, leaf.id).text = "AAA ARAA"
+        s.get(Page, leaf.id).ocr_conf = 40.0  # the letters read unsurely, as the marbled endpaper's were
     fake_models.jobs.clear()
     r.run(pipeline.Task(b, ("rebuild",), (leaf.id,)))
     (pattern,) = [j["params"] for j in fake_models.jobs if j["role"] == "page-build" and "out" in j["params"]]
     assert pattern["image"] == files.page_png(b, leaf.id)  # kept within its page crop, not the whole scan (review)
+    assert not pattern.get("font_fit")
+    with store.session() as s:
+        s.get(Page, leaf.id).ocr_conf = 95.0  # read surely: text, whatever its paper (the third book's orange flap)
+    fake_models.jobs.clear()
+    r.run(pipeline.Task(b, ("rebuild",), (leaf.id,)))
+    assert any(j["role"] == "page-build" and j["params"].get("font_fit") for j in fake_models.jobs)  # set in type
+    with store.session() as s:
+        s.get(Page, leaf.id).ocr_conf = 40.0
+    r.run(pipeline.Task(b, ("rebuild",), (leaf.id,)))  # back to the pattern the rest of the test has
     assert all(pipeline.made(p) for p in pages_of(b) if p.id in (leaf.id, cover.id))
     with store.session() as s:
         s.get(Page, cover.id).kind = "picture"  # a person says it is a picture: made again
@@ -762,3 +776,64 @@ def test_a_second_try_that_cannot_be_made_keeps_the_first_setting(make_book, fak
     assert len(tries) == 2  # set from its first layout, then again from the fallback's
     assert os.path.isfile(files.rebuilt_pdf(b, worst.id))  # the first setting, put back
     assert not os.path.exists(files.rebuilt_pdf(b, worst.id) + ".first.pdf")
+
+
+def test_a_page_is_taken_to_be_at_most_a4(make_book, runner):
+    """A PDF that gives its pages as their pixels at 72 dpi (the third book: 32 by 45 inches) is read at the resolution that makes each page
+    A4; a page already smaller keeps its scan's."""
+    b = make_book()
+    runner.run(pipeline.Task(b, ("import", "detect")))
+    page = pages_of(b)[0]
+    with store.session() as s:
+        s.get(Scan, page.scan_id).dpi = 72
+    dpi = pipeline.scan_dpi(page)
+    assert dpi == max(-(-page.crop_w * 100 // 827), -(-page.crop_h * 100 // 1169))
+    with store.session() as s:
+        s.get(Scan, page.scan_id).dpi = 2000
+    assert pipeline.scan_dpi(page) == 2000
+
+
+def test_a_books_shortlist_is_the_faces_its_sample_named_most(make_book, runner):
+    """The proposer's answers (JSON naming faces) are voted: the SHORTLIST faces most named, not every face any answer named."""
+    b = make_book()
+    runner.run(pipeline.Task(b, ("import",)))
+    answers = [
+        '{"class": "old-style", "faces": ["libre-caslon-text", "crimson-text", "sorts-mill-goudy"]}',
+        'Here: {"faces": ["libre-caslon-text", "cardo", "crimson-text"], "why": "bracketed serifs"}',
+        '{"faces": ["libre-caslon-text", "gelasio", "old-standard", "latin-modern", "fanwood-text", "source-serif-4"]}',
+        "not an answer",
+    ]
+    with open(files.path(b, "faces.json"), "w", encoding="utf-8") as f:
+        json.dump({"answers": answers}, f)
+    got = runner.book_faces(b)
+    assert got is not None
+    assert got[:2] == ["libre-caslon-text", "crimson-text"]
+    assert len(got) == pipeline.SHORTLIST
+
+
+def test_a_book_set_before_its_sample_reuses_the_faces_its_pages_were_given(make_book, runner):
+    """No faces.json (the book was set before a sample was asked for): the faces its pages were proposed then, voted, are its shortlist,
+    and no proposer is asked again."""
+    b = make_book()
+    runner.run(pipeline.Task(b, ("import", "detect")))
+    pages = pages_of(b)
+    with store.session() as s:
+        for k, p in enumerate(pages):
+            row = s.get(Page, p.id)
+            row.kind = "text"
+            row.ocr = {"type": {"asked": True, "faces": ["caslon", "bodoni" if k % 2 else "baskerville", "cardo"]}}
+    assert runner.book_faces(b) is None  # fewer than SAMPLE told
+    for extra in range(pipeline.SAMPLE):
+        with store.session() as s:
+            s.add(
+                Page(
+                    book_id=b,
+                    scan_id=pages[0].scan_id,
+                    position=100 + extra,
+                    kind="text",
+                    ocr={"type": {"asked": True, "faces": ["caslon"]}},
+                )
+            )
+    got = runner.book_faces(b)
+    assert got is not None
+    assert got[0] == "caslon"
