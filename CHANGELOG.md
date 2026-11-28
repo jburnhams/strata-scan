@@ -2,6 +2,19 @@
 
 Newest first, grouped by day. One entry per change, in the same commit or PR as the change.
 
+## 2026-11-28
+
+**A compare screen: each page as scanned against the same page in the finished PDF, and the pages to look at (branch `claude/project-thread-4o23es`)**
+Jonathan: a view of the original and the processed PDF at the same time, side by side page by page, above and below, as double-page spreads, and laid over each other with blend, difference, swipe and match options; strata-react's components made or changed for it; and per-page quality and match measures so only the bad pages need be looked at. The rebuild's quality gate (`gate.py`, worked on in another branch) is read, not changed or repeated: its verdict is one of the page's faults, and the new measures cover what it does not (the whole page, the pictures, pages that are not text).
+- **new** `compare.py`: `finished_preview` draws a page's finished PDF as wide as its preview (`previews/finished-<page>.jpg`) so overlays line up; `measure` is the gate's ink F1 (`gate.ink_of`, `gate.ink_f1`) over the whole page at 1000 px; `faults` in words: the gate's reasons, ink agreeing under `INK` (0.5), a finished page with almost none of the scan's ink (`LOST`: a picture cut short or left out, text not set), a page of another shape (`SHAPE`, 3 %; not covers, which are trimmed to the book). The marks are first guesses, not yet tried on the three books. Each result is kept in `previews/finished-<page>.json` and worked out again when either picture is newer. `spread` joins two pages into one picture.
+- `server/app.py`: **new** `GET /api/books/{id}/compare` (every page but skipped ones), `GET /api/pages/{id}/finished`, `GET /api/books/{id}/spread?pages=&side=scan|finished`.
+- `cli.py`: **new** `strata-scan compare BOOK [--all] [--json]` lists the pages to look at, and keeps the results for the web app.
+- `files.py`: the `finished` previews in the layout.
+- **new** `web/src/screens/CompareScreen.tsx` at `/books/{id}/compare` (a "Compare with the scans" link on the Book screen): opens on the pages to look at (`show=all` for every page), one page or the book's spreads (`layout=spread`), in any of strata-react's `Compare` views (side by side, above and below, swipe across or down, fade or multiply, blink, difference, ink match; `mode=`), N and P to step, what was found under the pages and a table of them.
+- `web/package.json`: strata-react 2.1 (the new views). Nothing else in the app changed for the move from 1.3.
+- `web/src/api.ts` (`PageMatch`, the paths), `web/src/mocks/fixtures.ts` (`wardMatches`), `web/src/mocks/handlers.ts`, `web/src/routes.tsx`, `web/src/screens/BookScreen.tsx`; **new** `web/stories/compare.stories.tsx`, `web/tests/integration/CompareScreen.test.tsx`; `web/tests/unit/logic.test.ts`; `web/strata-visual.config.ts` (two compare routes).
+- **new** `tests/unit/test_compare.py`: the measures on drawn pages, the faults, the API and the command over a book read for real, with finished pages written in the test.
+
 ## 2026-11-27
 
 **A dense page of type is not a pattern (branch `dense-text`)**

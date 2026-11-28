@@ -10,6 +10,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router'
 import {
   AsyncButton,
+  ButtonLink,
   DataView,
   EmptyState,
   JobStatus,
@@ -87,6 +88,7 @@ export function BookScreen() {
             <RunButton book={id} stages={['detect', 'read', 'export']} busy={job.running} onStarted={started} labels={{ idle: 'Find pages again', pending: 'Starting…', done: 'Started' }} />
             <RunButton book={id} stages={['read', 'export']} busy={job.running} onStarted={started} labels={{ idle: 'Read again', pending: 'Starting…', done: 'Started' }} />
             <RunButton book={id} stages={['rebuild', 'export']} busy={job.running || !book?.read} onStarted={started} labels={{ idle: 'Set in type', pending: 'Starting…', done: 'Started' }} />
+            <ButtonLink to={`/books/${id}/compare`} variant="outline">Compare with the scans</ButtonLink>
             <RunButton book={id} stages={['export']} busy={job.running} onStarted={started} labels={{ idle: 'Make the files', pending: 'Making…', done: 'Started' }} primary />
           </div>
         }

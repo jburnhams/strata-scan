@@ -15,11 +15,14 @@ stop left mid-stage. API (JSON unless it is a picture or a file):
     GET    /api/books/{id}/pages                                     the pages in reading order, without their OCR
     GET    /api/books/{id}/figures                                   every picture in the book
     GET    /api/books/{id}/files/{name}                              book.md, book.txt, book.pdf, book-rebuilt.pdf, book.zip
+    GET    /api/books/{id}/compare                                   each page's scan against its finished page: agreement, faults (compare.py)
+    GET    /api/books/{id}/spread?pages=&side=scan|finished          two pages side by side as one picture, for comparing spreads
     GET    /api/pages/{id}                                           a page with its scan, OCR lines and pictures
     PATCH  /api/pages/{id} {angle?, crop?, kind?, label?, text?}     a new turn or cut is hand work: the page is drawn and read again
     PUT    /api/scans/{id}/pages {pages: [{side, angle, crop}]}      the scan's pages set by hand (one page, or a spread's two)
     PUT    /api/pages/{id}/figures {figures: [{x, y, w, h, caption?}]}
     GET    /api/scans/{id}/image?angle=     /api/pages/{id}/image?size=thumb|preview|full     /api/figures/{id}/image
+    GET    /api/pages/{id}/finished                                  the finished page drawn as wide as the page's preview
 
 Every other path serves the web app, so a reload or a shared link opens that screen."""
 
@@ -28,7 +31,7 @@ import shutil
 import uuid
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import cv2
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
@@ -37,7 +40,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from strata_python import web
 
-from stratascan import __version__, export, files, geometry, pipeline, settings, sources, store, system
+from stratascan import __version__, compare, export, files, geometry, pipeline, settings, sources, store, system
 from stratascan.db.models import Book, Figure, Page, Scan
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -331,6 +334,38 @@ def create_app(runner: pipeline.Runner | None = None, migrate: bool = True) -> F
             pages = list(s.scalars(select(Page).where(Page.book_id == book_id).order_by(Page.position)))
         return [page_json(p, n.get(p.id, 0)) for p in pages]
 
+    @app.get("/api/books/{book_id}/compare")
+    def get_compare(book_id: int) -> list[dict[str, Any]]:
+        """Every page the finished PDF has (all but skipped ones), its scan against its finished page. The first call for a book renders each
+        finished page once; later ones read what was kept (compare.py)."""
+        get_or_404(Book, book_id, "book")
+        return compare.book_records(book_id)
+
+    @app.get("/api/books/{book_id}/spread")
+    def get_spread(
+        book_id: int,
+        pages: str = Query(..., pattern=r"^\d+(,\d+)?$"),
+        side: str = Query("scan", pattern="^(scan|finished)$"),
+    ) -> Response:
+        """One or two of the book's pages side by side, as scanned (their previews) or as finished, so a spread is compared as one picture."""
+        ids = [int(i) for i in pages.split(",")]
+        with store.session() as s:
+            found = {p.id: p for p in s.scalars(select(Page).where(Page.id.in_(ids), Page.book_id == book_id))}
+        if len(found) != len(set(ids)):
+            raise HTTPException(404, f"the book has no page {', '.join(str(i) for i in ids if i not in found)}")
+        pics = [
+            files.preview(book_id, "page", found[i].id) if side == "scan" else compare.finished_preview(found[i])
+            for i in ids
+        ]
+        if any(p is None or not os.path.isfile(p) for p in pics):
+            raise HTTPException(
+                404,
+                "a page of the spread has not been drawn yet"
+                if side == "scan"
+                else "a page of the spread is not set yet",
+            )
+        return jpeg(compare.spread(cast("str", pics[0]), pics[1] if len(pics) > 1 else None))
+
     @app.get("/api/books/{book_id}/figures")
     def get_book_figures(book_id: int) -> list[dict[str, Any]]:
         get_or_404(Book, book_id, "book")
@@ -548,6 +583,14 @@ def create_app(runner: pipeline.Runner | None = None, migrate: bool = True) -> F
         )
         if not os.path.isfile(f):
             raise HTTPException(404, "the page has not been drawn yet")
+        return FileResponse(f, headers={"Cache-Control": "no-cache"})
+
+    @app.get("/api/pages/{page_id}/finished")
+    def finished_image(page_id: int) -> FileResponse:
+        p: Page = get_or_404(Page, page_id, "page")
+        f = compare.finished_preview(p)
+        if f is None:
+            raise HTTPException(404, "the page is not set yet: set the book in type first")
         return FileResponse(f, headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/figures/{figure_id}/image")

@@ -5,7 +5,8 @@
     books/<book>/ocr/<page>.pdf        the page with its text under it, from the ocr role; joined into the book's searchable PDF
     books/<book>/rebuilt/<page>.pdf    a text page set again in matching type (pipeline.stage_rebuild)
     books/<book>/figures/<figure>.png  a picture cut from a page
-    books/<book>/previews/...          smaller JPEGs for the web app: scan-<scan>.jpg and page-<page>.jpg (PREVIEW px), thumb-<page>.jpg
+    books/<book>/previews/...          smaller JPEGs for the web app: scan-<scan>.jpg and page-<page>.jpg (PREVIEW px), thumb-<page>.jpg,
+                                       finished-<page>.jpg (the finished page as wide as page-<page>.jpg) and .json (compare.py)
     books/<book>/export/               book.md, book.txt, book.pdf, book.zip, book-rebuilt.pdf (when pages were set again)
     uploads/                           PDFs sent from the browser before they become books
 
@@ -54,7 +55,7 @@ def figure_png(book_id: int, figure_id: int) -> str:
 
 
 def preview(book_id: int, kind: str, item_id: int) -> str:
-    """kind: scan, page or thumb."""
+    """kind: scan, page, thumb or finished."""
     return path(book_id, "previews", f"{kind}-{item_id}.jpg")
 
 

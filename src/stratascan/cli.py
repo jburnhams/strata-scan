@@ -1,5 +1,6 @@
 """Command line: `doctor` checks the environment, `add` imports and reads a book (the same work the web app starts), `books` lists them,
-`run` runs stages again, `export` writes a book's files, `serve` starts the web server. Commands that change books run the stages in this
+`run` runs stages again, `export` writes a book's files, `compare` lists the pages whose finished page does not match its scan (and keeps
+what it worked out for the web app's compare screen), `serve` starts the web server. Commands that change books run the stages in this
 process and wait; they do not migrate the database (only `serve` does), so run the server once first on a new database."""
 
 import argparse
@@ -85,6 +86,25 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compare(args: argparse.Namespace) -> int:
+    from stratascan import compare
+
+    with store.session() as s:
+        if s.get(Book, args.book) is None:
+            sys.exit(f"there is no book {args.book} (./strata-scan books lists them)")
+    rows = compare.book_records(args.book)
+    if args.json:
+        print(json.dumps(rows, indent=1))
+        return 0
+    look = [r for r in rows if r["look"]]
+    for r in rows if args.all else look:
+        ink = f"{100 * r['match']['ink']:3.0f}%" if r["match"] else "   -"
+        name = f"{r['position']}" + (f" ({r['label']})" if r["label"] else "")
+        print(f"  page {name[:24]:24} {r['kind']:8} ink {ink}  {'; '.join(r['why']) or 'good'}")
+    print(f"{len(look)} of {len(rows)} pages to look at")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="strata-scan")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -123,6 +143,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     e = sub.add_parser("export", help="write a book's files (book.md, book.txt, book.pdf, book.zip)")
     e.add_argument("book", type=int)
     e.set_defaults(fn=cmd_export)
+    c = sub.add_parser("compare", help="list the pages whose finished page does not match its scan")
+    c.add_argument("book", type=int)
+    c.add_argument("--all", action="store_true", help="every page, not only those to look at")
+    c.add_argument("--json", action="store_true")
+    c.set_defaults(fn=cmd_compare)
     shared.add_set(sub, settings.SETTINGS)
     shared.add_serve(sub, run_server, default_port=8368)
     ns = p.parse_args(argv)

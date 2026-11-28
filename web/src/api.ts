@@ -65,6 +65,25 @@ export interface PageSummary {
   gate: { passed: boolean; reasons: string[] } | null
 }
 
+/** A page's scan against its finished page (`GET /api/books/{id}/compare`, compare.py). */
+export interface PageMatch {
+  page_id: number
+  position: number
+  label: string | null
+  kind: Kind
+  side: Side
+  scan_id: number
+  /** Whether the page has its finished PDF yet. */
+  finished: boolean
+  /** The measures, once it is finished: `ink` is how well the inks agree (0 to 1, over the whole page), `ink_scan` and `ink_finished` the share of each that is ink, `shape` how far apart the two pages' width over height are (a share). */
+  match: { ink: number; ink_scan: number; ink_finished: number; shape: number } | null
+  /** The quality gate's verdict on a page set in type (gate.py), as the rebuild left it. */
+  gate: { passed: boolean; reasons: string[] } | null
+  /** Whether the page is one to look at, and why, in words. */
+  look: boolean
+  why: string[]
+}
+
 export interface Line { text: string; box: [number, number, number, number]; conf: number }
 export interface Figure { id: number; page_id: number; x: number; y: number; w: number; h: number; caption: string | null; hand: boolean }
 /** A picture as the book lists it (`GET /api/books/{id}/figures`): with its page's position and label. */
@@ -120,6 +139,9 @@ export const paths = {
   scanPages: (id: number) => `/api/scans/${id}/pages`,
   scanImage: (id: number, angle: number) => `/api/scans/${id}/image?angle=${angle}`,
   figureImage: (id: number) => `/api/figures/${id}/image`,
+  compare: (id: number) => `/api/books/${id}/compare`,
+  finishedImage: (id: number) => `/api/pages/${id}/finished`,
+  spread: (book: number, pages: number[], side: 'scan' | 'finished') => `/api/books/${book}/spread?pages=${pages.join(',')}&side=${side}`,
 } as const
 
 /** The query keys the screens share, so a write can invalidate every read it changes. */
@@ -131,6 +153,7 @@ export const keys = {
   pages: (id: number) => ['books', id, 'pages'],
   bookFigures: (id: number) => ['books', id, 'figures'],
   page: (id: number) => ['pages', id],
+  compare: (id: number) => ['books', id, 'compare'],
 } as const
 
 const send = (method: string, body: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -151,6 +174,7 @@ export const api = {
   pages: (id: number) => fetchJson<PageSummary[]>(withBase(paths.pages(id))),
   bookFigures: (id: number) => fetchJson<BookFigure[]>(withBase(paths.bookFigures(id))),
   page: (id: number) => fetchJson<PageDetail>(withBase(paths.page(id))),
+  compare: (id: number) => fetchJson<PageMatch[]>(withBase(paths.compare(id))),
   savePage: (id: number, change: Partial<{ angle: number; crop: Crop; kind: Kind; label: string; text: string }>) => fetchJson<PageDetail>(withBase(paths.page(id)), send('PATCH', change)),
   setScanPages: (scanId: number, pages: { side: Side; angle: number; crop: Crop }[]) => fetchJson<PageSummary[]>(withBase(paths.scanPages(scanId)), send('PUT', { pages })),
   setFigures: (pageId: number, figures: { x: number; y: number; w: number; h: number; caption?: string | null }[]) => fetchJson<Figure[]>(withBase(paths.pageFigures(pageId)), send('PUT', { figures })),

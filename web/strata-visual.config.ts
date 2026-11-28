@@ -36,6 +36,7 @@ export default defineVisualConfig({
           spread: [pageSpread],
         },
       },
+      { name: 'compare', path: '/books/1/compare', states: { look: [], spread: { path: '/books/1/compare?show=all&layout=spread&mode=stack&page=116' } } },
       { name: 'system', path: '/system' },
       { name: 'settings', path: '/settings', states: { general: [], appearance: { path: '/settings?tab=appearance' } } },
     ],
