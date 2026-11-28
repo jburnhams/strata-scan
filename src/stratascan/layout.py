@@ -363,6 +363,34 @@ def picture_box(
     return bx0, by0, bx1 - bx0, by1 - by0
 
 
+def merged_figures(laid: Sequence[Mapping[str, Any]], read: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The layout's pictures (boxes in thousandths) that are boxes of the page, and each picture the read found (`figures.py`, or a person
+    drew) that none of them covers: a layout model can name a picture in the wrong units (the third book's page 16: y to 1630 of 1000) or
+    miss it, and the page was set without its engraving."""
+
+    def sound(b: Sequence[Any]) -> bool:
+        return (
+            len(b) == 4
+            and all(0 <= float(v) <= 1000 for v in b)
+            and float(b[2]) > float(b[0])
+            and float(b[3]) > float(b[1])
+        )
+
+    kept = [dict(f) for f in laid if f.get("kind") == "rule" or sound(cast("list[Any]", f.get("box") or []))]
+    boxes = [cast("list[float]", f["box"]) for f in kept if f.get("kind") != "rule"]
+    for f in read:
+        b = cast("list[float]", f.get("box") or [])
+        if not sound(b):
+            continue
+        area = (b[2] - b[0]) * (b[3] - b[1])
+        covered = sum(
+            max(0.0, min(b[2], o[2]) - max(b[0], o[0])) * max(0.0, min(b[3], o[3]) - max(b[1], o[1])) for o in boxes
+        )
+        if covered < 0.5 * area:
+            kept.append(dict(f))
+    return kept
+
+
 def with_figure_pictures(groups: Mapping[str, Any], png: str, folder: str, context: str = "") -> dict[str, Any]:
     """The layout's groups with each picture (not a rule) given its own cut (`cut_picture`, a JPEG in `folder`), which page-build draws as
     given: its own crops were lossless grey, so a hand-coloured plate lost its colour and a page with a plate weighed megabytes. Its box is

@@ -339,3 +339,19 @@ def test_a_pictures_box_is_found_again_from_its_ink_clear_of_the_text(tmp_path):
     assert abs(x - 200) < 15
     assert abs(x + w - 820) < 20
     assert layout.picture_box(str(png), (10, 1200, 50, 50), lines) == (10, 1200, 50, 50)  # no ink there: kept as boxed
+
+
+def test_the_reads_pictures_fill_in_what_the_layout_missed_or_misboxed():
+    """A layout figure out of the page's thousandths is dropped; a picture the read found that no layout figure covers is added; one the
+    layout covers is not added twice; rules stay."""
+    laid = [
+        {"box": [170, 1000, 815, 1630], "kind": "engraving"},  # y in the wrong units
+        {"box": [100, 100, 400, 300], "kind": "figure"},
+        {"box": [0, 500, 1000, 502], "kind": "rule"},
+    ]
+    read = [
+        {"box": [160, 460, 860, 800], "kind": "figure"},  # the engraving, which the layout misboxed
+        {"box": [110, 110, 390, 290], "kind": "figure"},  # covered already
+    ]
+    got = layout.merged_figures(laid, read)
+    assert [f["box"] for f in got] == [[100, 100, 400, 300], [0, 500, 1000, 502], [160, 460, 860, 800]]

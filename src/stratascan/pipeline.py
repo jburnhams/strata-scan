@@ -710,6 +710,10 @@ class Runner:
         plain = cast("dict[str, Any]", ocr.get("layout") or {}).get("model") == layout.PLAIN
         faces = self.book_faces(page.book_id)
         try:
+            lay = cast("dict[str, Any]", ocr.get("layout") or {})
+            groups = cast("dict[str, Any]", lay.get("groups") or {})
+            pictures = layout.merged_figures(groups.get("figures") or [], self.figures_in_thousandths(page, gray.shape))
+            ocr = dict(ocr, layout=dict(lay, groups=dict(groups, figures=pictures)))
             used = self.set_in_type(page, ocr, png, out, dpi, was, faces)
         except layout.LayoutError as e:
             files.remove(out)
