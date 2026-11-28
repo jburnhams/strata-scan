@@ -416,6 +416,7 @@ def with_figure_pictures(groups: Mapping[str, Any], png: str, folder: str, conte
         if n in set_lines
     ]
     out: list[dict[str, Any]] = []
+    found_px: list[tuple[int, int, int, int]] = []
     for k, f in enumerate(figs):
         box = cast("list[float]", f.get("box") or [])
         if (
@@ -429,6 +430,13 @@ def with_figure_pictures(groups: Mapping[str, Any], png: str, folder: str, conte
             out.append(f)
             continue
         px, py, pw, ph = picture_box(png, (x0, y0, x1 - x0, y1 - y0), text)
+        if any(
+            max(0, min(px + pw, a + c) - max(px, a)) * max(0, min(py + ph, b + d) - max(py, b))
+            > 0.6 * min(pw * ph, c * d)
+            for a, b, c, d in found_px
+        ):
+            continue  # the same picture found again (the layout's box and the read's, both put right): drawn once
+        found_px.append((px, py, pw, ph))
         name = f"{os.path.splitext(os.path.basename(png))[0]}.fig{k}.jpg"
         found = [1000 * px / wide, 1000 * py / high, 1000 * (px + pw) / wide, 1000 * (py + ph) / high]
         out.append(dict(f, box=found, image=cut_picture(png, (px, py, pw, ph), os.path.join(folder, name))))

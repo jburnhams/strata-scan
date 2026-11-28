@@ -355,3 +355,24 @@ def test_the_reads_pictures_fill_in_what_the_layout_missed_or_misboxed():
     ]
     got = layout.merged_figures(laid, read)
     assert [f["box"] for f in got] == [[100, 100, 400, 300], [0, 500, 1000, 502], [160, 460, 860, 800]]
+
+
+def test_one_picture_boxed_twice_is_drawn_once(tmp_path):
+    """The layout's box (too low) and the read's (right) for one engraving, both put right from the ink: one picture, not two."""
+    from PIL import Image, ImageDraw
+
+    page = Image.new("L", (1000, 1400), 225)
+    d = ImageDraw.Draw(page)
+    for x in range(200, 800, 7):
+        d.line([(x, 300), (x + 20, 700)], fill=40, width=3)
+    png = tmp_path / "p.png"
+    page.save(png)
+    groups = {
+        "blocks": [],
+        "figures": [
+            {"box": [190, 300, 830, 520], "kind": "engraving"},
+            {"box": [195, 210, 825, 505], "kind": "figure"},
+        ],
+    }
+    got = layout.with_figure_pictures(groups, str(png), str(tmp_path / "crops"))
+    assert len(got["figures"]) == 1
