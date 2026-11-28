@@ -18,14 +18,16 @@ DPI = 200
 
 
 def text_pdf(path, lines, size=14):
-    """One page: (x, y from the top, text[, size]) each set in Helvetica (WinAnsi, so curly quotes and daggers can be written)."""
+    """One page: (x, y from the top, text[, size[, stroke]]) each set in Helvetica (WinAnsi, so curly quotes and daggers can be written)."""
     w = PdfWriter()
     page = w.add_blank_page(W, H)
     ops = []
     for ln in lines:
         x, y, text, *rest = ln
         escaped = text.encode("cp1252").replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
-        ops.append(b"BT /F1 %d Tf %d %d Td (%s) Tj ET" % (rest[0] if rest else size, x, H - y, escaped))
+        # a fifth item: the stroke round the glyphs (fill and stroke, as page-build sets a heavier weight)
+        stroke = b"%.2f w 2 Tr " % rest[1] if len(rest) > 1 and rest[1] else b""
+        ops.append(b"BT %s/F1 %d Tf %d %d Td (%s) Tj ET" % (stroke, rest[0] if rest else size, x, H - y, escaped))
     stream = DecodedStreamObject()
     stream.set_data(b"\n".join(ops))
     page[NameObject("/Contents")] = w._add_object(stream)

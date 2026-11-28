@@ -44,7 +44,7 @@ import numpy as np
 from sqlalchemy import delete, func, select, update
 from strata_python.clients import models as sm
 
-from stratascan import ahead, export, figures, files, gate, geometry, layout, marks, rows, settings, sources, store
+from stratascan import ahead, export, figures, files, gate, geometry, layout, marks, qc, rows, settings, sources, store
 from stratascan.db.models import Book, Figure, Page, Scan
 
 log = logging.getLogger("stratascan")
@@ -804,9 +804,16 @@ class Runner:
         except layout.LayoutError as e:
             files.remove(out)
             raise StageError(str(e)) from e
+        reasons: list[str] = []
+        if typeset(page) and page.ocr_conf is not None and page.ocr_conf >= READABLE:
+            reasons.append(f"its {len((page.text or '').split())} words, read surely, were kept as a picture")
+        try:
+            reasons += qc.oversized(out, qc.drawn(out, wide))
+        except Exception as e:
+            reasons.append(f"the made page could not be checked ({type(e).__name__}: {e})")
         verdict: dict[str, Any] = {
-            "passed": True,
-            "reasons": [],
+            "passed": not reasons,
+            "reasons": reasons,
             "picture": bool(boxes),
             "whole": bool(made.get("whole")),
             "marks": "marks" in made,
@@ -1064,7 +1071,14 @@ class Runner:
 
     def judge(self, page: Page, ocr: dict[str, Any], png: str, out: str, dpi: int, again: str | None) -> gate.Verdict:
         blocks = cast("list[dict[str, Any]]", cast("dict[str, Any]", ocr.get("layout") or {}).get("blocks") or [])
-        return gate.check_page(out, png, page.text or "", blocks, dpi, again)
+        return gate.check_page(out, png, page.text or "", blocks, dpi, again, self.read_pictures(page))
+
+    def read_pictures(self, page: Page) -> list[tuple[float, float, float, float]]:
+        """The pictures the read found on the page (or a person drew), [x0, y0, x1, y1] in its pixels: what the rebuilt page must draw."""
+        with store.session() as s:
+            return [
+                (f.x, f.y, f.x + f.w, f.y + f.h) for f in s.scalars(select(Figure).where(Figure.page_id == page.id))
+            ]
 
     def set_from_rows(
         self,

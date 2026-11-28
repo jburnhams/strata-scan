@@ -20,11 +20,15 @@ numbers, they were chosen knowing which of those pages looked right):
 The words are checked against the page's text and, when there is one, a second reading by another route (a vision-language model on the
 picture, pipeline): what both have, and any line either has (`lost_words`).
 
+    look     how the page looks (qc.py): no words in uneven weights or at a stray size, none over another, every picture the read found
+             drawn and whole and over no text, and the page no larger than A4 nor heavier than qc.HEAVY
+
 A check that could not be made (a PDF that will not open) is a failure with the reason, never a pass."""
 
 import re
 import unicodedata
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, cast
@@ -34,6 +38,8 @@ import numpy as np
 import pypdfium2 as pdfium  # pyright: ignore[reportMissingTypeStubs]
 import pypdfium2.raw as pdfium_c  # pyright: ignore[reportMissingTypeStubs]
 from numpy.typing import NDArray
+
+from stratascan import qc
 
 LOST = 0.01  # share of the corrected text's words
 OVERLAP = 0.01  # share of the characters
@@ -383,7 +389,13 @@ def text_ink(pdf: str, png: str, blocks: list[dict[str, Any]], dpi: float, shift
 
 
 def check_page(
-    pdf: str, png: str, text: str, blocks: list[dict[str, Any]], dpi: float, reading: str | None = None
+    pdf: str,
+    png: str,
+    text: str,
+    blocks: list[dict[str, Any]],
+    dpi: float,
+    reading: str | None = None,
+    pictures: Sequence[tuple[float, float, float, float]] = (),
 ) -> Verdict:
     """The page's verdict. `text` is its corrected (or typed) text, `blocks` its layout's (layout.read_layout), `reading` the second reading:
     the words must be in the page by both, so neither a reading that stopped short nor a line the first one missed can pass it."""
@@ -420,4 +432,15 @@ def check_page(
         reasons.append("symbols are missing: " + " ".join(missing[:8]))
     if sized:
         reasons.append("type of the wrong size: " + "; ".join(sized[:3]))
+    # how it looks (qc.py): uneven weights, stray and overlapping words, pictures cut short, missing or over the text, the page's size.
+    # `pictures`: those the read found, [x0, y0, x1, y1] in the scan's pixels
+    lines = [
+        (float(x), float(y), float(x + w), float(y + h))
+        for b in blocks
+        for x, y, w, h in cast("list[list[float]]", b.get("lines") or [])
+    ]
+    try:
+        reasons += qc.look(pdf, png, scan_width(png), lines, pictures)
+    except Exception as e:
+        reasons.append(f"the rebuilt page's look could not be checked ({type(e).__name__}: {e})")
     return Verdict(lost, over, off, ink, missing, tuple(reasons))
