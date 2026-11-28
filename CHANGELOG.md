@@ -11,7 +11,7 @@ Jonathan: a view of the original and the processed PDF at the same time, side by
 - `cli.py`: **new** `strata-scan compare BOOK [--all] [--json]` lists the pages to look at, and keeps the results for the web app.
 - `files.py`: the `finished` previews in the layout.
 - **new** `web/src/screens/CompareScreen.tsx` at `/books/{id}/compare` (a "Compare with the scans" link on the Book screen): opens on the pages to look at (`show=all` for every page), one page or the book's spreads (`layout=spread`), in any of strata-react's `Compare` views (side by side, above and below, swipe across or down, fade or multiply, blink, difference, ink match; `mode=`), N and P to step, what was found under the pages and a table of them.
-- `web/package.json`: strata-react 2.1 (the new views). Nothing else in the app changed for the move from 1.3.
+- `web/package.json`: strata-react 2.1 (the new views). Nothing else in the app changed for the move from 1.3, but its look did: `web/tests/visual/baselines/` were rewritten on the CI runner (`update-visual-baselines.yml`), 113 shots moved a few pixels (2.x type and spacing) and 28 are **new** for the Compare screen and its stories.
 - `web/src/api.ts` (`PageMatch`, the paths), `web/src/mocks/fixtures.ts` (`wardMatches`), `web/src/mocks/handlers.ts`, `web/src/routes.tsx`, `web/src/screens/BookScreen.tsx`; **new** `web/stories/compare.stories.tsx`, `web/tests/integration/CompareScreen.test.tsx`; `web/tests/unit/logic.test.ts`; `web/strata-visual.config.ts` (two compare routes).
 - **new** `tests/unit/test_compare.py`: the measures on drawn pages, the faults, the API and the command over a book read for real, with finished pages written in the test.
 
