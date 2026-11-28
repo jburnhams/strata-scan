@@ -258,7 +258,7 @@ def read_layout(
 
 
 COLOUR = 60  # saturation (0-255), once the paper is made white, above which a pixel is coloured ink
-COLOURED = 0.02  # share of a picture's pixels that are coloured ink for it to be kept in colour; less is grey (Jonathan, 2026-11-27)
+COLOURED = 0.05  # share of a picture's printed pixels that are coloured for it to be kept in colour; less is grey (Jonathan, 2026-11-27)
 JPEG = 85  # quality of the pictures a rebuilt page carries: lossy, as a scan's picture already is (lossless made a plate 20 MB)
 
 
@@ -282,8 +282,11 @@ def has_colour(rgb: Any, whiten: bool = True) -> bool:
     npa: Any = np
     flat = (whitened(rgb) if whiten else npa.clip(rgb, 0, 255)).astype(np.uint8)
     hsv = np.asarray(Image.fromarray(flat, "RGB").convert("HSV"), dtype=np.uint8)
-    inked = (hsv[..., 1] > COLOUR) & (hsv[..., 2] > 50)
-    return float(inked.mean()) > COLOURED
+    coloured = (hsv[..., 1] > COLOUR) & (hsv[..., 2] > 50)
+    # a share of what is printed, not of the picture: a red bookplate among handwriting on a white leaf is a small part of its picture
+    # but much of its ink (the 1828 book's endpaper came out grey, 2026-11-28)
+    printed = (flat.min(axis=2) < 235) | coloured
+    return float(coloured.sum()) > COLOURED * max(float(printed.sum()), 0.05 * coloured.size)
 
 
 def save_picture(img: Any, out: str, as_is: bool = False) -> str:

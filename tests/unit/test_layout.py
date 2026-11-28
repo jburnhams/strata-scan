@@ -392,3 +392,16 @@ def test_a_red_cloth_cover_kept_as_it_is_stays_red(tmp_path):
     Image.new("RGB", (600, 900), (90, 92, 95)).save(png)
     with Image.open(layout.cut_as_is(str(png), (0, 0, 600, 900), str(tmp_path / "g.jpg"))) as im:
         assert im.mode == "L"
+
+
+def test_a_red_stamp_among_handwriting_on_white_is_colour():
+    """Marks lifted onto white: handwriting and a small red bookplate. The red is little of the picture but much of what is printed."""
+    import numpy as np
+
+    img = np.full((800, 500, 3), 255.0)
+    img[100:110, 50:450] = (60, 60, 70)  # lines of handwriting
+    img[300:310, 50:450] = (60, 60, 70)
+    img[500:540, 200:260] = (200, 40, 40)  # the bookplate's red
+    assert layout.has_colour(img)
+    img[500:540, 200:260] = (60, 60, 70)
+    assert not layout.has_colour(img)
