@@ -5,6 +5,7 @@ import json
 import os
 
 from books import book_pdf
+from PIL import Image
 
 from stratascan import files, settings
 
@@ -36,6 +37,15 @@ def test_a_book_from_the_command_line(cli, models_service, tmp_path):
     assert "puppets" in md
     cli("run", books[0]["id"], "export")
     assert "book.zip" in cli("export", books[0]["id"]).stdout
+    # one page finished as itself: the comparison lists it as matching, the rest as not set
+    first = int(sorted(os.listdir(os.path.join(files.book_dir(books[0]["id"]), "pages")))[1].split(".")[0])
+    Image.open(files.page_png(books[0]["id"], first)).convert("RGB").save(
+        files.rebuilt_pdf(books[0]["id"], first), "PDF"
+    )
+    out = cli("compare", books[0]["id"], "--all").stdout
+    assert out.count("not set yet") == 3
+    assert "good" in out
+    assert out.strip().endswith("3 of 4 pages to look at")
     r = cli("run", 99, "read", check=False)
     assert r.code != 0
     assert "no book 99" in r.out

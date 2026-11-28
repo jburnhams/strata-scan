@@ -2,7 +2,7 @@
 // tests, every Storybook story and the visual suite's screenshots, so a screen looks the same in
 // each. They follow the two real books strata-scan was built for (both public domain), with fixed
 // dates, so screenshots do not change from day to day.
-import type { Book, BookFigure, Kind, Line, PageDetail, PageSummary, Settings, SystemStatus } from '../api'
+import type { Book, BookFigure, Kind, Line, PageDetail, PageSummary, Settings, SystemStatus, PageMatch } from '../api'
 
 export const defaultSettings: Settings = { data_dir: '/home/ada/scans', max_dpi: '600', workers: '4' }
 
@@ -168,3 +168,28 @@ export const systemNearlyFull: SystemStatus = { ...systemStatus, disk: { total: 
 
 /** strata-models is not answering: pages cannot be read. */
 export const systemNoModels: SystemStatus = { ...systemStatus, models: { url: 'http://127.0.0.1:8366', available: false, ocr_model: null } }
+
+/** The Ward book's pages against their finished pages (`GET /api/books/1/compare`): the last four not set yet, three to look at, one for each kind of fault. */
+export const wardMatches: PageMatch[] = wardPages.map(p => {
+  const finished = p.position <= 40
+  const faults: Record<number, string[]> = {
+    7: ["a line is set 1.6 times its block's size"],
+    16: ['the ink agrees only 38%'],
+    22: ["the finished page has almost none of the scan's ink"],
+  }
+  const why = finished ? (faults[p.position] ?? []) : ['not set yet']
+  const ink = p.position === 16 ? 0.38 : p.position === 22 ? 0.02 : p.kind === 'blank' ? 1 : 0.78 + ((p.position * 7) % 15) / 100
+  return {
+    page_id: p.id,
+    position: p.position,
+    label: p.label,
+    kind: p.kind,
+    side: p.side,
+    scan_id: p.scan_id,
+    finished,
+    match: finished ? { ink, ink_scan: 0.06, ink_finished: p.position === 22 ? 0.001 : 0.055, shape: 0 } : null,
+    gate: finished && p.kind === 'text' ? { passed: p.position !== 7, reasons: p.position === 7 ? faults[7] : [] } : null,
+    look: why.length > 0,
+    why,
+  }
+})

@@ -39,6 +39,10 @@ def test_a_book_through_the_api(base_url, tmp_path):
         page = c.get(f"/api/pages/{text['id']}").json()
         assert "puppets" in page["text"]
         assert c.get(f"/api/pages/{text['id']}/image", params={"size": "thumb"}).headers["content-type"] == "image/jpeg"
+        # nothing is set in type yet: every page is listed as not set, and has no finished picture
+        rows = c.get(f"/api/books/{book['id']}/compare").json()
+        assert [r["why"] for r in rows] == [["not set yet"]] * 4
+        assert c.get(f"/api/pages/{text['id']}/finished").status_code == 404
 
         # a person's crop is kept and the page is read again with it
         crop = page["crop"]

@@ -9,6 +9,7 @@ import type { RouteObject } from 'react-router'
 import { Layout } from './screens/Layout'
 import { BooksScreen } from './screens/BooksScreen'
 import { BookScreen } from './screens/BookScreen'
+import { CompareScreen } from './screens/CompareScreen'
 import { PageScreen } from './screens/PageScreen'
 import { SystemScreen } from './screens/SystemScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
@@ -20,6 +21,7 @@ export const routes: RouteObject[] = [
     children: [
       { index: true, element: <BooksScreen /> },
       { path: 'books/:bookId', element: <BookScreen /> },
+      { path: 'books/:bookId/compare', element: <CompareScreen /> },
       { path: 'pages/:pageId', element: <PageScreen /> },
       { path: 'system', element: <SystemScreen /> },
       { path: 'settings', element: <SettingsScreen /> },

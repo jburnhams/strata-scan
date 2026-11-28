@@ -7,8 +7,8 @@
 // state: `server.use(booksError)` in a test, `msw.use(booksError)` in a story's beforeEach,
 // `states: { error: [booksError] }` in the visual config.
 import { delay, http, HttpResponse } from 'msw'
-import { paths, type Book, type Figure, type PageDetail, type PageSummary, type Settings, type Stage } from '../api'
-import { collier, defaultSettings, initialBooks, page14, page9, pageDetail, systemNearlyFull as nearlyFull, systemNoModels as noModels, systemStatus, ward, wardFigures, wardPages } from './fixtures'
+import { paths, type Book, type Figure, type PageDetail, type PageMatch, type PageSummary, type Settings, type Stage } from '../api'
+import { collier, defaultSettings, initialBooks, page14, page9, pageDetail, wardMatches, systemNearlyFull as nearlyFull, systemNoModels as noModels, systemStatus, ward, wardFigures, wardPages } from './fixtures'
 import { coverPage, picturePage, textPage } from './images'
 
 /** What the mock server holds. Writes change it, so a test can add a book and see it listed. */
@@ -17,6 +17,7 @@ export const mock = {
   books: [...initialBooks] as Book[],
   pages: [...wardPages] as PageSummary[],
   details: { 109: page9, 114: page14 } as Record<number, PageDetail>,
+  matches: [...wardMatches] as PageMatch[],
 }
 
 /** Back to the healthy state: call between tests and stories. */
@@ -25,6 +26,7 @@ export function resetMock() {
   mock.books = [...initialBooks]
   mock.pages = [...wardPages]
   mock.details = { 109: page9, 114: page14 }
+  mock.matches = [...wardMatches]
 }
 
 // Matched as paths, so they answer whatever origin and base the app runs under.
@@ -101,6 +103,9 @@ export const handlers = [
     return HttpResponse.json({ ...b, stage: stages[0] }, { status: 202 })
   }),
   http.get(at('/api/books/:id/pages'), ({ params }) => HttpResponse.json(Number(params.id) === ward.id ? mock.pages : [])),
+  http.get(at('/api/books/:id/compare'), ({ params }) => (findBook(Number(params.id)) ? HttpResponse.json(Number(params.id) === ward.id ? mock.matches : []) : refused(`there is no book ${params.id}`, 404))),
+  // a spread is one picture of its pages: the mock answers with the first page's
+  http.get(at('/api/books/:id/spread'), ({ request }) => pagePicture(Number(new URL(request.url).searchParams.get('pages')?.split(',')[0]))),
   http.get(at('/api/books/:id/figures'), ({ params }) => HttpResponse.json(Number(params.id) === ward.id ? wardFigures : [])),
 
   http.get(at('/api/pages/:id'), ({ params }) => {
@@ -142,6 +147,7 @@ export const handlers = [
   }),
 
   http.get(at('/api/pages/:id/image'), ({ params }) => pagePicture(Number(params.id))),
+  http.get(at('/api/pages/:id/finished'), ({ params }) => (mock.matches.find(m => m.page_id === Number(params.id))?.finished ? pagePicture(Number(params.id)) : refused('the page is not set yet: set the book in type first', 404))),
   http.get(at('/api/scans/:id/image'), ({ params }) => pagePicture(mock.pages.find(p => p.scan_id === Number(params.id))?.id ?? 0)),
   http.get(at('/api/figures/:id/image'), () => jpeg(picturePage)),
 ]
@@ -166,6 +172,10 @@ export const bookError = http.get(at('/api/books/:id'), down)
 /** The 1828 book stopped part way: strata-models went away. */
 export const bookFailed = http.get(at('/api/books/:id'), () => HttpResponse.json({ ...collier, stage: 'idle', error: 'strata-models is not running at http://127.0.0.1:8366' }))
 export const pagesLoading = http.get(at('/api/books/:id/pages'), () => delay('infinite'))
+export const compareLoading = http.get(at('/api/books/:id/compare'), () => delay('infinite'))
+export const compareError = http.get(at('/api/books/:id/compare'), down)
+/** Every finished page matches its scan. */
+export const compareAllGood = http.get(at('/api/books/:id/compare'), () => HttpResponse.json(wardMatches.map(m => ({ ...m, finished: true, match: m.match ?? { ink: 0.9, ink_scan: 0.06, ink_finished: 0.06, shape: 0 }, look: false, why: [] }))))
 export const runFails = http.post(at('/api/books/:id/run'), down)
 
 export const pageLoading = http.get(at('/api/pages/:id'), () => delay('infinite'))

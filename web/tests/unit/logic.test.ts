@@ -2,8 +2,9 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { colorSchemeScript, format } from 'strata-react'
 import { clampCrop, describeBook, wrapAngle, folderProblem, pageName, turnCrop, turnedSize, wholeProblem, withBase } from '../../src/api'
-import { collier, page14, page9, systemNearlyFull, systemNoModels, systemStatus, ward, wardPages } from '../../src/mocks/fixtures'
+import { collier, page14, page9, systemNearlyFull, systemNoModels, systemStatus, ward, wardMatches, wardPages } from '../../src/mocks/fixtures'
 import { describeShelf, pickPdf } from '../../src/screens/BooksScreen'
+import { describeMatches, explain, viewsFor } from '../../src/screens/CompareScreen'
 import { describeWork, needsLook } from '../../src/screens/BookScreen'
 import { describePage, halves, union } from '../../src/screens/PageScreen'
 import { describeDisk, ofSize, usable } from '../../src/screens/SystemScreen'
@@ -124,5 +125,30 @@ describe('index.html', () => {
   it('inlines the colour-scheme script ThemeProvider expects, so a dark page does not flash light', () => {
     const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8')
     expect(html).toContain(`<script>${colorSchemeScript()}</script>`)
+  })
+})
+
+describe('compare', () => {
+  const good = wardMatches.map(m => ({ ...m, finished: true, look: false, why: [], match: m.match ?? { ink: 0.9, ink_scan: 0.06, ink_finished: 0.06, shape: 0 } }))
+
+  it('says how many pages are to look at, or that all match, or why there is nothing to compare', () => {
+    expect(describeMatches([])).toBe('No pages yet: the book has to be read and set in type first.')
+    expect(describeMatches(wardMatches.map(m => ({ ...m, finished: false, match: null })))).toBe('No page is set in type yet: set the book in type to compare its pages.')
+    expect(describeMatches(good)).toBe('Every finished page matches its scan.')
+    expect(describeMatches(good.map((m, i) => (i === 0 ? { ...m, finished: false } : m)))).toBe(`Every finished page matches its scan. ${format.count(1, 'page')} not set yet.`)
+    expect(describeMatches(wardMatches)).toMatch(/^3\spages of 40\sfinished pages to look at: Page 7/)
+  })
+
+  it('pairs pages into the spreads of a printed book', () => {
+    expect(viewsFor(wardMatches.slice(0, 4), true).map(v => v.map(r => r.position))).toEqual([[1], [2, 3], [4]])
+    expect(viewsFor(wardMatches.slice(0, 2), false)).toHaveLength(2)
+  })
+
+  it('explains a page in a sentence, the ink fault once', () => {
+    const [p7, p16, p22, p41] = [7, 16, 22, 41].map(n => wardMatches.find(m => m.position === n)!)
+    expect(explain(p7)).toMatch(/^The ink agrees \d+%\. A line is set 1\.6 times its block's size\.$/)
+    expect(explain(p16)).toBe('The ink agrees 38%. The type passed its checks.')
+    expect(explain({ ...p22, gate: null })).toBe("The ink agrees 2%. The finished page has almost none of the scan's ink.")
+    expect(explain(p41)).toBe('Not set in type yet.')
   })
 })
